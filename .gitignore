@@ -7,9 +7,9 @@ __MACOSX/
 # 대회 원본 데이터는 올리지 않는다 (각자 대회 사이트에서 받아 폴더에 넣는다)
 handover 2/
 
-# 큰 중간 산출물·로그 (스크립트로 재생성 가능)
-outputs/**/*.parquet
-outputs/**/*.log
-outputs/**/hash_*.txt
-
-# 제출 파일(submissions/vN/)과 리포트(outputs/*.md, *.csv, *.json)는 올린다
+# outputs/ 는 리포트(md)만 올린다. 나머지(parquet, csv, json, 로그)는 스크립트로 재생성된다.
+outputs/*
+!outputs/*.md
+outputs/**/*
+!outputs/**/*.md
+!outputs/**/

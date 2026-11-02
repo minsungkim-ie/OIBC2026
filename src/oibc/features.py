@@ -54,6 +54,8 @@ def build_frame(base, sites, fa_r, fb_r):
     d["doy_sin"] = np.sin(2 * np.pi * doy / 365.25).astype("float32")
     d["doy_cos"] = np.cos(2 * np.pi * doy / 365.25).astype("float32")
     d["month"] = ts.month.to_numpy().astype("float32")
+    d["dow"] = ts.dayofweek.to_numpy().astype("float32")             # 요일 사용 가능 (대회 공지)
+    d["weekend"] = (ts.dayofweek.to_numpy() >= 5).astype("float32")
     for c in ["capacity_kw", "lat", "lon", "wa_dist", "wb_dist"]:
         d[c] = d[c].astype("float32")
     na = d[FEATURES].isna().sum().sum()

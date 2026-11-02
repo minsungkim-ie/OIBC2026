@@ -5,7 +5,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "handover 2" / "01_participant_dataset"
-VERSION = "v2"                       # 대회 제출 순서. v2부터 산출물은 outputs/<VERSION>/
+VERSION = "v3"                       # 대회 제출 순서. v2부터 산출물은 outputs/<VERSION>/
 OUT = ROOT / "outputs" / VERSION
 SUB = ROOT / "submissions" / VERSION
 
@@ -53,6 +53,14 @@ LGBM_PARAMS = dict(
     verbose=-1,
 )
 EARLY_STOP = 200
+
+# v3: RandomForest (MSE 분할 → 평균 예측이라 배율은 검증 OOF에서 다시 정한다)
+MODEL_KIND = "rf"                    # "rf" | "lgbm"
+RF_PARAMS = dict(
+    n_estimators=150, min_samples_leaf=30, max_features=0.4, max_samples=0.15,
+    bootstrap=True, n_jobs=-1, random_state=SEED, verbose=0,
+)
+SCALE_GRID = [round(0.90 + 0.005 * i, 3) for i in range(31)]     # 0.90 ~ 1.05
 
 # baseline.py 근사 (참고용 비교군, objective l2)
 BASE_WA = ["wa_cloud", "wa_temp", "wa_humidity", "wa_rain", "wa_wind_speed", "wa_ground_press"]

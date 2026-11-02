@@ -19,6 +19,7 @@ uv run python scripts/04_check_submission.py submissions/v1   # 제출 전 형�
 - **버전 번호 = 대회 사이트에 낸 제출 순서.** 낼 때마다 v1 → v2 → … 로 하나씩 올린다.
 - 제출 파일: `submissions/vN/` (한 번 낸 폴더는 수정하지 않음) / 코드 고정: `git tag vN`
 - 점수·변경점 기록: [`EXPERIMENTS.md`](EXPERIMENTS.md) — 작업 전에 먼저 읽는다.
+- 대회 전체 규정(마감 11-13, 제출 규격, 허용 데이터): [`docs/대회_컨텍스트.md`](docs/대회_컨텍스트.md)
 - 방법 설명: `설명서_v1_방법론.md`, 규칙: [`CLAUDE.md`](CLAUDE.md)
 
 ## 협업

@@ -74,7 +74,7 @@ c1, c2 = cap_of(x_final)
 cr1, cr2 = cap_of(ref_x)
 
 md = ["# 02 구성 최적화 리포트", "",
-      f"- 잔차 기준: VALID 1년 (v1 모델 OOF), 가중치 0.10·SMP_train·k",
+      f"- 잔차 기준: VALID 1년 (v2 모델 OOF), 가중치 0.10·SMP_train·k",
       f"- W_LB (구성과 무관한 하한) = {W_lb:,.0f}", "",
       "| 구성 | W | W_LB 대비 격차 | G1 용량(kW) | G2 용량(kW) | G1 개소 | G2 개소 |", "|---|---|---|---|---|---|---|",
       f"| 참조 (A→G1, B→G2) | {W_ref:,.0f} | {W_ref - W_lb:,.0f} | {cr1:,.1f} | {cr2:,.1f} | {(ref_x==0).sum()} | {(ref_x==1).sum()} |",

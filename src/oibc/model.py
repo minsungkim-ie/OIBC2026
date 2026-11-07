@@ -3,7 +3,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from .config import EARLY_STOP, FEATURES, LGBM_PARAMS, PRED_CF_CLIP, PRED_SCALE
+from .config import EARLY_STOP, FEATURES, LGBM_PARAMS, PRED_CF_CLIP
 from .io import k_of
 
 
@@ -27,14 +27,14 @@ def fit_lgbm(Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_estimators=None, par
     return m
 
 
-def predict_kwh(m, d, feats=FEATURES, clip=PRED_CF_CLIP, scale=PRED_SCALE):
-    """cf_pred.clip(0, 1.1) × scale × capacity_kw, 야간 0. scale은 과대예측 보정 배율(v2)."""
+def predict_kwh(m, d, feats=FEATURES, clip=PRED_CF_CLIP):
+    """cf_pred.clip(0, 1.1) × capacity_kw, 야간 0."""
     cf = np.zeros(len(d), dtype="float64")
     day = (d["elev"] > 0).to_numpy()
     if day.any():
         cf[day] = m.predict(d.loc[day, feats])
     cf = np.clip(cf, 0, clip)
-    return cf * scale * d["capacity_kw"].to_numpy(dtype="float64")
+    return cf * d["capacity_kw"].to_numpy(dtype="float64")
 
 
 def importance_top(m, feats=FEATURES, n=20):

@@ -4,7 +4,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pandas as pd
 from oibc.config import DATA, OUT
 
-OUT.mkdir(parents=True, exist_ok=True)
+OUT.mkdir(exist_ok=True)
 lines = []
 def p(m=""):
     print(m); lines.append(str(m))

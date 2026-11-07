@@ -5,9 +5,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "handover 2" / "01_participant_dataset"
-VERSION = "v2"                       # 대회 제출 순서. v2부터 산출물은 outputs/<VERSION>/
-OUT = ROOT / "outputs" / VERSION
-SUB = ROOT / "submissions" / VERSION
+OUT = ROOT / "outputs"
+SUB = ROOT / "submissions" / "v1"
 
 TZ = "Asia/Seoul"
 SEED = 42
@@ -27,8 +26,6 @@ FINAL_TRAIN = (_ts("2023-06-01 01:00"), _ts("2025-06-01 00:00"))
 # 정제
 CF_MAX = 1.2
 PRED_CF_CLIP = 1.1
-# v2: 전체 예측 배율 보정. 백테스트 두 구간에서 W 최적 배율이 0.98 / 0.97 → 평균
-PRED_SCALE = 0.975
 
 # 평가식
 PENALTY_RATE = 0.10
@@ -74,9 +71,8 @@ LAG_COLS = {"wa": ["wa_cloud"], "wb": ["wb_cloud", "wb_uv_idx"]}
 LAG_FEATS = [f"{c}_{s}" for c in ("wa_cloud", "wb_cloud", "wb_uv_idx") for s in ("m1", "p1")]
 AGG_FEATS = ["wa_cloud_dmean", "wb_cloud_dmean", "wb_total_liq_dsum"]
 SUN_FEATS = ["elev", "azim", "cosz", "toa", "toa_x_clear_a", "toa_x_clear_b"]
-CAL_FEATS = ["hour", "doy_sin", "doy_cos", "month", "dow", "weekend"]
-# v2: site_id(범주형)는 발전소별 과거 수준을 외워 다음 해 과대예측을 키우므로 제외
-SITE_FEATS = ["capacity_kw", "lat", "lon", "wa_dist", "wb_dist"]
+CAL_FEATS = ["hour", "doy_sin", "doy_cos", "month"]
+SITE_FEATS = ["site_id", "capacity_kw", "lat", "lon", "wa_dist", "wb_dist"]
 FEATURES = WA_COLS + WB_COLS + SUN_FEATS + LAG_FEATS + AGG_FEATS + CAL_FEATS + SITE_FEATS
 BASE_FEATURES = BASE_WA + BASE_WB + ["elev", "azim", "cosz", "doy_sin", "doy_cos", "hour",
                                      "capacity_kw", "lat", "lon"]

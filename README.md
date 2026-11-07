@@ -14,14 +14,14 @@ uv sync
 ## 실행
 ```bash
 uv run python scripts/run_all.py                              # 01 검증 → 02 구성 최적화 → 03 최종 학습·제출 파일 → 04 형식 검증
-uv run python scripts/04_check_submission.py submissions/v1   # 제출 전 형식 검증
+uv run python scripts/04_check_submission.py submissions/v6   # 제출 전 형식 검증
 ```
 
 ## 구조
 | 경로 | 내용 |
 |---|---|
 | `docs/대회_규정.md` | 대회 개요·채점·데이터 규정·제출 규격·마감 (일반 사항은 여기 한 곳) |
-| `docs/v1_방법론.md` | v1 방법 설명(전처리·피처·모델·구성 최적화)과 검증 결과 |
+| `docs/v1_방법론.md` | v1 방법 설명(전처리·피처·모델·구성 최적화)과 검증 결과. main 코드(v6)는 v1에서 라운드 가중만 다르다 |
 | `EXPERIMENTS.md` | **제출 이력·점수·다음 후보** (작업 전 먼저 읽기) |
 | `CLAUDE.md` | AI 어시스턴트·팀 작업 규칙 (절대 규칙, 버전·협업 규칙) |
 | `src/oibc/`, `scripts/` | 코드 (설정은 `src/oibc/config.py`) |

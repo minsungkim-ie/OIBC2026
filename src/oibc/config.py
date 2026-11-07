@@ -5,12 +5,17 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "handover 2" / "01_participant_dataset"
-OUT = ROOT / "outputs"
-SUB = ROOT / "submissions" / "v1"
+OUT = ROOT / "outputs"                      # v1 산출물(best_iter, composition_opt)을 읽는 곳
+# v6: v1 + 17시 라운드 가중
+RUN_OUT = ROOT / "outputs" / "v6"           # 이번 실행 산출물 (v1 파일을 덮어쓰지 않는다)
+SUB = ROOT / "submissions" / "v6"
 
 TZ = "Asia/Seoul"
 SEED = 42
 ROUNDS = (10, 17)
+# 라운드 평균 가중치. v1은 50:50. v1 검증 OOF에서 17시 0.7이 W 최소(212.78M → 211.73M),
+# 홀수주·짝수주 모두 50:50보다 낮음 (0.8 이상은 짝수주에서 나빠짐)
+ROUND_WEIGHTS = {10: 0.3, 17: 0.7}
 
 
 def _ts(s: str) -> pd.Timestamp:

@@ -6,13 +6,14 @@ import numpy as np
 import pandas as pd
 
 from _bootstrap import log
-from oibc.config import FINAL_TRAIN, OUT, ROUNDS, SUB
+from oibc.config import FINAL_TRAIN, OUT, ROUND_WEIGHTS, ROUNDS, RUN_OUT, SUB
 from oibc.features import build_frame, clean_flags
 from oibc.io import load_generation, load_sites, load_smp_test
 from oibc.model import fit_lgbm, predict_kwh, sample_weight
 from oibc.pipeline import station_tables
 
 SUB.mkdir(parents=True, exist_ok=True)
+RUN_OUT.mkdir(parents=True, exist_ok=True)
 sites = load_sites()
 best_iter = {int(k): v for k, v in json.load(open(OUT / "best_iter.json")).items()}
 comp = pd.read_csv(OUT / "composition_opt.csv")
@@ -51,8 +52,13 @@ for r in ROUNDS:
 
 ps = per_round[0].copy()
 assert (ps["site_id"].to_numpy() == per_round[1]["site_id"].to_numpy()).all()
-ps["pred_kwh"] = np.mean([p["pred_kwh"].to_numpy() for p in per_round], axis=0)
-ps.to_parquet(OUT / "test_site_pred.parquet", index=False)
+for r, p in zip(ROUNDS, per_round):
+    ps[f"pred_r{r}"] = p["pred_kwh"].to_numpy()
+assert abs(sum(ROUND_WEIGHTS.values()) - 1) < 1e-9
+ps["pred_kwh"] = sum(ROUND_WEIGHTS[r] * ps[f"pred_r{r}"] for r in ROUNDS)
+log(f"라운드 가중 {ROUND_WEIGHTS}, 예측 합계 {ps['pred_kwh'].sum() / 1e6:,.2f} GWh")
+ps.to_parquet(RUN_OUT / "test_site_pred.parquet", index=False)
+ps = ps.drop(columns=[f"pred_r{r}" for r in ROUNDS])
 
 ps["group"] = ps["site_id"].map(grp)
 f = ps.groupby(["group", "ts"], as_index=False)["pred_kwh"].sum().rename(columns={"pred_kwh": "forecast_kwh"})

@@ -5,7 +5,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "handover 2" / "01_participant_dataset"
-VERSION = "v2"                       # 대회 제출 순서. v2부터 산출물은 outputs/<VERSION>/
+VERSION = "v5"                       # 대회 제출 순서. v2부터 산출물은 outputs/<VERSION>/
 OUT = ROOT / "outputs" / VERSION
 SUB = ROOT / "submissions" / VERSION
 
@@ -53,6 +53,18 @@ LGBM_PARAMS = dict(
     verbose=-1,
 )
 EARLY_STOP = 200
+
+# v5: 아날로그 앙상블(kNN). 같은 시(hour) 학습 표본 중 예보·태양 위치가 가까운 K개의
+# 정규화 발전량(cf/cosz) 평균 × 질의 cosz. 가중치는 표준화 후 거리 축 배율.
+MODEL_KIND = "knn"                   # "knn" | "lgbm"
+KNN_K = 100
+# 프로토타입(VALID, round 17, 참조 구성, 최적 α) W: 이 조합 225.2M < 구름 가중↑ 226.3M < toa×맑음 228.7M
+# < 방위각·시정 포함 기본 231.8M. (같은 조건 v2 LightGBM 단일 r17 ≈ 203.9M)
+KNN_FEATS = dict(elev=1.0, doy_sin=0.5, doy_cos=0.5, wa_cloud=1.0, wb_cloud=1.0, wb_uv_idx=1.5,
+                 wa_humidity=0.5, wb_rel_hum=0.5)
+KNN_SITE_EFF = True                  # 발전소 효율 보정(학습 풀 안 같은 시각 제외 kNN 대비 실적 비율)
+KNN_SHRINK = 0                       # 효율 보정 수축(표본 수 기준). 0 = 수축 없음
+SCALE_GRID = [round(0.90 + 0.005 * i, 3) for i in range(31)]     # 0.90 ~ 1.05, 01이 검증 OOF로 선택
 
 # baseline.py 근사 (참고용 비교군, objective l2)
 BASE_WA = ["wa_cloud", "wa_temp", "wa_humidity", "wa_rain", "wa_wind_speed", "wa_ground_press"]

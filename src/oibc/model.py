@@ -3,8 +3,10 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from .config import EARLY_STOP, FEATURES, LGBM_PARAMS, PRED_CF_CLIP, PRED_SCALE
+from .config import (EARLY_STOP, FEATURES, KNN_FEATS, KNN_K, KNN_SHRINK, KNN_SITE_EFF, LGBM_PARAMS,
+                     PRED_CF_CLIP, PRED_SCALE)
 from .io import k_of
+from .knn import AnalogKNN
 
 
 def sample_weight(d):
@@ -27,12 +29,22 @@ def fit_lgbm(Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_estimators=None, par
     return m
 
 
+def fit_knn(d, y):
+    """v5 아날로그 앙상블. d: 주간 학습 표본(site_id 정수 코드 포함), y: 설비이용률."""
+    m = AnalogKNN(KNN_FEATS, k=KNN_K, site_eff=KNN_SITE_EFF, shrink=KNN_SHRINK)
+    return m.fit(d, y, sid=d["site_id"].to_numpy())
+
+
 def predict_kwh(m, d, feats=FEATURES, clip=PRED_CF_CLIP, scale=PRED_SCALE):
     """cf_pred.clip(0, 1.1) × scale × capacity_kw, 야간 0. scale은 과대예측 보정 배율(v2)."""
     cf = np.zeros(len(d), dtype="float64")
     day = (d["elev"] > 0).to_numpy()
     if day.any():
-        cf[day] = m.predict(d.loc[day, feats])
+        if isinstance(m, AnalogKNN):
+            dd = d.loc[day]
+            cf[day] = m.predict(dd, sid=dd["site_id"].to_numpy())
+        else:
+            cf[day] = m.predict(d.loc[day, feats])
     cf = np.clip(cf, 0, clip)
     return cf * scale * d["capacity_kw"].to_numpy(dtype="float64")
 

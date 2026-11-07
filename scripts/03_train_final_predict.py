@@ -6,15 +6,17 @@ import numpy as np
 import pandas as pd
 
 from _bootstrap import log
-from oibc.config import FINAL_TRAIN, OUT, ROUNDS, SUB
+from oibc.config import FINAL_TRAIN, MODEL_KIND, OUT, ROUNDS, SUB
 from oibc.features import build_frame, clean_flags
 from oibc.io import load_generation, load_sites, load_smp_test
-from oibc.model import fit_lgbm, predict_kwh, sample_weight
+from oibc.model import fit_knn, fit_lgbm, predict_kwh, sample_weight
 from oibc.pipeline import station_tables
 
 SUB.mkdir(parents=True, exist_ok=True)
 sites = load_sites()
 best_iter = {int(k): v for k, v in json.load(open(OUT / "best_iter.json")).items()}
+alpha = json.load(open(OUT / "scale.json"))["alpha"]          # 01이 검증 OOF로 정한 배율
+log(f"모델 {MODEL_KIND}, 예측 배율 α={alpha}")
 comp = pd.read_csv(OUT / "composition_opt.csv")
 assert len(comp) == 253 and set(comp["site_id"]) == set(sites["site_id"])
 grp = comp.set_index("site_id")["group"]
@@ -38,12 +40,15 @@ for r in ROUNDS:
     log(f"정제 제외: 음수 {cnt['neg']:,} / cf>1.2 {cnt['cf_gt_1_2']:,} / 종일0 행 {cnt['allzero_day_rows']:,}")
     sel = keep & (d["elev"] > 0)
     y = (d["energy"] / d["capacity_kw"]).astype("float32")
-    m = fit_lgbm(d[sel], y[sel], sample_weight(d)[sel], n_estimators=best_iter[r])
+    if MODEL_KIND == "knn":
+        m = fit_knn(d[sel], y[sel])
+    else:
+        m = fit_lgbm(d[sel], y[sel], sample_weight(d)[sel], n_estimators=best_iter[r])
     del d, y
     gc.collect()
     dt = build_frame(base_te, sites, *tabs_te[r])
     out = pd.DataFrame({"site_id": base_te["site_id"].to_numpy(), "ts": base_te["ts"].to_numpy(),
-                        "pred_kwh": predict_kwh(m, dt)})
+                        "pred_kwh": predict_kwh(m, dt, scale=alpha)})
     log(f"round {r} 예측 합계 {out['pred_kwh'].sum() / 1e6:,.2f} GWh")
     per_round.append(out)
     del m, dt

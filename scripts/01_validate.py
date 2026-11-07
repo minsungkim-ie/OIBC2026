@@ -1,4 +1,4 @@
-"""시간순 검증: VAL_TRAIN으로 학습 → VALID 예측, OOF 잔차 저장, 리포트."""
+"""시간순 검증: VAL_TRAIN으로 학습 → VALID 예측, OOF 잔차 저장, 리포트. 모델은 config.MODEL_KIND."""
 import gc
 import json
 
@@ -7,14 +7,16 @@ from _bootstrap import log
 import numpy as np
 import pandas as pd
 
-from oibc.config import (BASE_FEATURES, BASE_PARAMS, FEATURES, OUT, ROUNDS, VALID, VAL_ES_DAYS,
-                         VAL_TRAIN)
+from oibc.config import (BASE_FEATURES, BASE_PARAMS, MODEL_KIND, OUT, ROOT, ROUNDS, SCALE_GRID, VALID,
+                         VAL_ES_DAYS, VAL_TRAIN)
 from oibc.features import build_frame, clean_flags
 from oibc.io import k_of, load_generation, load_sites, load_smp_test, load_smp_train
-from oibc.model import fit_lgbm, importance_top, predict_kwh, sample_weight
+from oibc.model import fit_knn, fit_lgbm, importance_top, predict_kwh, sample_weight
 from oibc.pipeline import station_tables
 from oibc.scoring import breakdown, group_frame, summarize
 
+M = MODEL_KIND.upper()
+KNN = MODEL_KIND == "knn"
 OUT.mkdir(parents=True, exist_ok=True)
 sites = load_sites()
 ref_comp = sites.set_index("site_id")["current_group"].map({"A": "G1", "B": "G2"})
@@ -44,19 +46,24 @@ for r in ROUNDS:
         f"종일0 발전소-일 행 {cnt['allzero_day_rows']:,} (총 {cnt['total']:,}행)")
     day = d["elev"] > 0
     in_tr = (d["ts"] >= VAL_TRAIN[0]) & (d["ts"] <= VAL_TRAIN[1])
-    tr = in_tr & keep & day & (d["ts"] <= es_cut)
+    # kNN은 조기종료가 없어 VAL_TRAIN 전체를 풀로 쓴다. LightGBM은 마지막 VAL_ES_DAYS일을 조기종료에 쓴다.
+    tr = in_tr & keep & day & (True if KNN else (d["ts"] <= es_cut))
     es = in_tr & keep & day & (d["ts"] > es_cut)
     y = (d["energy"] / d["capacity_kw"]).astype("float32")
     w = sample_weight(d)
     log(f"학습 {int(tr.sum()):,}행 / 조기종료 {int(es.sum()):,}행")
-    m = fit_lgbm(d[tr], y[tr], w[tr], d[es], y[es], w[es])
-    best_iter[r] = int(m.best_iteration_)
-    log(f"best_iteration={best_iter[r]}")
-    importance_top(m).to_csv(OUT / f"feature_importance_r{r}.csv", index=False)
+    if KNN:
+        m = fit_knn(d[tr], y[tr])
+        best_iter[r] = 0
+        log(f"kNN 풀 {int(tr.sum()):,}행, 효율 보정 발전소 {0 if m.eff is None else len(m.eff)}개")
+    else:
+        m = fit_lgbm(d[tr], y[tr], w[tr], d[es], y[es], w[es])
+        best_iter[r] = int(m.best_iteration_)
+        log(f"best_iteration={best_iter[r]}")
+        importance_top(m).to_csv(OUT / f"feature_importance_r{r}.csv", index=False)
 
     va = (d["ts"] >= VALID[0]) & (d["ts"] <= VALID[1])
     dv = d[va]
-    preds[("v1", r)] = pd.Series(predict_kwh(m, dv), index=dv.index)
     preds[("raw", r)] = pd.Series(predict_kwh(m, dv, scale=1.0), index=dv.index)   # 보정 전
     del m
 
@@ -78,6 +85,16 @@ for r in ROUNDS:
 
 json.dump({str(r): best_iter[r] for r in ROUNDS}, open(OUT / "best_iter.json", "w"))
 
+# 전체 배율 α: 검증 OOF(라운드 평균 보정 전 예측)에서 참조 구성 W를 최소화하는 값. 03이 같은 값을 쓴다.
+raw_mean = pd.concat([preds[("raw", r)] for r in ROUNDS], axis=1).mean(axis=1).reindex(meta.index)
+Ws = {a: summarize(group_frame(meta.assign(pred_kwh=raw_mean.to_numpy() * a), ref_comp, smp))["W"]
+      for a in SCALE_GRID}
+alpha = min(Ws, key=Ws.get)
+log(f"배율 α 탐색: 최적 {alpha} (W {Ws[alpha]:,.0f}; α=1.0 W {Ws.get(1.0, float('nan')):,.0f})")
+json.dump({"alpha": alpha, "W_by_alpha": {str(a): v for a, v in Ws.items()}}, open(OUT / "scale.json", "w"))
+for r in ROUNDS:
+    preds[("v1", r)] = preds[("raw", r)] * alpha
+
 oof = meta.copy()
 for r in ROUNDS:
     oof[f"pred_v1_r{r}"] = preds[("v1", r)].reindex(meta.index).to_numpy()
@@ -93,28 +110,38 @@ log(f"oof_valid.parquet 저장 ({len(oof):,}행)")
 
 # 채점
 rows, brk = [], {}
-for name, col in (("baseline 근사 (참조 구성)", "pred_base"), ("v2 모델 보정 전 (참조 구성)", "pred_raw"),
-                  ("v2 모델 (참조 구성)", "pred_kwh")):
+# 참고: v2(LightGBM) OOF와의 50:50 평균 (제출 대상 아님, 블렌드 후보 판단용)
+v2_oof = ROOT / "outputs" / "v2" / "oof_valid.parquet"
+if v2_oof.exists():
+    v2p = pd.read_parquet(v2_oof, columns=["site_id", "ts", "pred_kwh"]).rename(columns={"pred_kwh": "pred_v2"})
+    oof = oof.merge(v2p, on=["site_id", "ts"], how="left")
+    assert oof["pred_v2"].notna().all(), "v2 OOF 매칭 실패"
+    oof["pred_blend"] = 0.5 * oof["pred_v2"] + 0.5 * oof["pred_kwh"]
+cmp = [("baseline 근사 (참조 구성)", "pred_base"), (f"{M} 모델 보정 전 (참조 구성)", "pred_raw"),
+       (f"{M} 모델 α={alpha} (참조 구성)", "pred_kwh")]
+if "pred_blend" in oof:
+    cmp += [("[참고] v2 LightGBM (참조 구성)", "pred_v2"), (f"[참고] v2 + {M} 50:50 (참조 구성)", "pred_blend")]
+for name, col in cmp:
     g = group_frame(oof.assign(pred_kwh=oof[col]), ref_comp, smp)
     s = summarize(g, cap_by_group)
     rows.append((name, s))
     brk[name] = breakdown(g)
 for r in ROUNDS:
     g = group_frame(oof.assign(pred_kwh=oof[f"pred_v1_r{r}"]), ref_comp, smp)
-    rows.append((f"v2 단일 round {r} (참조 구성)", summarize(g, cap_by_group)))
+    rows.append((f"{M} 단일 round {r} (참조 구성)", summarize(g, cap_by_group)))
 
 md = ["# 01 검증 리포트 (VALID 2024-06-01 01:00 ~ 2025-06-01 00:00)", "",
-      f"best_iteration: {best_iter}", "",
+      f"모델: {M}, best_iteration: {best_iter}, 배율 α={alpha}", "",
       "| 비교 | S | 매전수익 | W | W_LB | 절대오차 합(kWh) | nMAE(주간) |", "|---|---|---|---|---|---|---|"]
 for n, s in rows:
     md.append(f"| {n} | {s['S']:,.0f} | {s['rev']:,.0f} | {s['W']:,.0f} | {s['W_LB']:,.0f} | "
               f"{s['abs_err']:,.0f} | {s['nMAE_day']:.4f} |")
-mo, hr = brk["v2 모델 (참조 구성)"]
+mo, hr = brk[f"{M} 모델 α={alpha} (참조 구성)"]
 mob, hrb = brk["baseline 근사 (참조 구성)"]
-md += ["", "## 월별 W (참조 구성)", "", "| 월 | baseline 근사 | v2 |", "|---|---|---|"]
+md += ["", "## 월별 W (참조 구성)", "", f"| 월 | baseline 근사 | {M} |", "|---|---|---|"]
 md += [f"| {k} | {mob[k]:,.0f} | {mo[k]:,.0f} |" for k in mo.index]
-md += ["", "## 시간대별 W (참조 구성)", "", "| 시 | baseline 근사 | v2 |", "|---|---|---|"]
+md += ["", "## 시간대별 W (참조 구성)", "", f"| 시 | baseline 근사 | {M} |", "|---|---|---|"]
 md += [f"| {k} | {hrb[k]:,.0f} | {hr[k]:,.0f} |" for k in hr.index]
 (OUT / "01_validation_report.md").write_text("\n".join(md), encoding="utf-8")
-print("\n".join(md[:12]))
+print("\n".join(md[:14]))
 log("완료")

@@ -10,8 +10,9 @@ import pandas as pd
 from .config import ROUNDS
 
 
-def impute_forecast(df, key, cols, ts_index, precip, tag, log=print):
-    """df: [key, round, ts] + cols. ts_index: 01:00 시작·00:00 끝의 연속 시간 격자(24h × D일)."""
+def impute_forecast(df, key, cols, ts_index, precip, tag, log=print, allow_nan=False):
+    """df: [key, round, ts] + cols. ts_index: 01:00 시작·00:00 끝의 연속 시간 격자(24h × D일).
+    allow_nan: 학습 구간 전용. 모든 지점의 예보가 통째로 없는 날(2022-05-08·09 등)은 채울 수 없어 NaN으로 남긴다."""
     assert len(ts_index) % 24 == 0 and ts_index[0].hour == 1, "ts_index는 대상일 단위(01:00~다음날 00:00)여야 함"
     stations = sorted(df[key].unique())
     S, R, T, C = len(stations), len(ROUNDS), len(ts_index), len(cols)
@@ -60,8 +61,8 @@ def impute_forecast(df, key, cols, ts_index, precip, tag, log=print):
             c[..., i] = np.nan_to_num(c[..., i], nan=0.0)
     n_left = int(np.isnan(c).sum())
     log(f"[impute {tag}] d(강수 0) 후 결측 {n_left:,}")
-    assert n_left == 0, f"{tag}: 대체 후 NaN 잔존"
+    assert allow_nan or n_left == 0, f"{tag}: 대체 후 NaN 잔존"
 
     out = pd.DataFrame(c.reshape(S * R * T, C), index=grid, columns=cols).reset_index()
-    assert out[cols].isna().sum().sum() == 0
+    assert allow_nan or out[cols].isna().sum().sum() == 0
     return out

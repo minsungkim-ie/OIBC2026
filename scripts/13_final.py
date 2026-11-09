@@ -6,6 +6,8 @@
   v8 후보 = python scripts/13_final.py v8 v2y csiy --alpha-src est
   --comp: 구성 최적화 대신 이 구성 파일 사용, --alpha: 검증 결과 대신 이 배율 사용
   v9 = python scripts/13_final.py v9 v2 csi v2e csie v2e_c csie_c --weights 0.125,0.125,0.125,0.125,0.25,0.25 --comp submissions/v4/composition.csv --alpha 0.9729
+  v11 = python scripts/13_final.py v11 v2 csi v2e csie v2e_c csie_c csie_m --weights 0.1125,0.1125,0.1125,0.1125,0.225,0.225,0.1 --comp submissions/v4/composition.csv --alpha 0.9768
+        (csie_m = MLP, algo="mlp". 최종 학습 에폭 = 폴드 B 최적 에폭, 학습률 일정은 같은 고정 계단)
   --weights: 변형별 혼합 가중치(합 1, 변형 순서대로). 없으면 단순 평균
   --alpha-src est: 배율을 "[이력]" 조건(평가 연도와 같은 조건) 결과에서 고른다 (기본은 전체 발전소)
 

@@ -56,6 +56,8 @@ VARIANTS = {
     "csi_x": dict(feats=FEATURES, target="csi", algo="xgb"),
     "v2_c": dict(feats=FEATURES, target="cf", algo="cat"),
     "csi_c": dict(feats=FEATURES, target="csi", algo="cat"),
+    # v11: 신경망(sklearn MLP). site_id는 fit_mlp가 뺀다 (정수 코드를 연속값으로 넣지 않도록)
+    "csie_m": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="mlp"),
 }
 PIT_MODES = ("year", "month")
 EFF_YEAR_START_MONTH = 6        # 연 단위 블록은 6월 1일 시작 (평가 구간 2025-06-01 ~ 와 같은 모양)

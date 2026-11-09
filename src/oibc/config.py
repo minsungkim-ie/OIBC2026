@@ -68,6 +68,21 @@ CAT_PARAMS = dict(
     thread_count=-1, verbose=200, allow_writing_files=False,
 )
 
+# v11: 트리가 아닌 계열(신경망)을 작은 비중으로 앙상블. sklearn MLPRegressor(제곱오차, adam)를 partial_fit으로
+# 1에폭씩 돌리며 학습 구간 마지막 ES_DAYS일의 가중 L1로 조기종료(최적 에폭의 가중치를 되돌림).
+# 입력은 학습 행 평균·표준편차로 표준화 후 ±MLP_CLIP으로 자른다. 효율 피처 결측은 eff_days 0, 나머지 1.0.
+# 조정(폴드 A·B r17, 검증 가중 L1(cf)): alpha 1e-4는 1~3에폭부터 과적합(B 0.0606), 0.1 0.0592, 1 0.0568,
+# 3 → A 0.0577 / B 0.0570(편향 1.001/1.000), 10은 1에폭에서 멈춤. 256-128·3층·lr 3e-3/3e-4·배치 4096은 개선 없음.
+MLP_PARAMS = dict(
+    hidden_layer_sizes=(128, 64), activation="relu", solver="adam", alpha=3.0, batch_size=1024,
+    learning_rate_init=1e-3, shuffle=True,
+)
+MLP_MAX_EPOCHS = 60
+MLP_PATIENCE = 6           # 조기종료 기준 개선이 없는 에폭 수
+MLP_LR_DECAY = 0.5         # MLP_LR_STEP 에폭마다 학습률에 곱함 (고정 일정 → 최종 학습에서 재현)
+MLP_LR_STEP = 10
+MLP_CLIP = 5.0
+
 # baseline.py 근사 (참고용 비교군, objective l2)
 BASE_WA = ["wa_cloud", "wa_temp", "wa_humidity", "wa_rain", "wa_wind_speed", "wa_ground_press"]
 BASE_WB = ["wb_cloud", "wb_temp", "wb_rel_hum", "wb_uv_idx", "wb_precip_prob",

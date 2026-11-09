@@ -2,6 +2,9 @@
 
 사용: python scripts/14_cv_blend.py lgb=v2,csi,v2e,csie xgb=v2e_x,csie_x cat=v2e_c,csie_c
   계열 = 변형들의 단순 평균(각 변형은 라운드 0.3·r10 + 0.7·r17). 계열끼리 0.1 간격 단체(simplex) 격자로 섞는다.
+v11: python scripts/14_cv_blend.py lgb=v2,csi,v2e,csie cat=v2e_c,csie_c mlp=csie_m --base 0.5,0.5 --add 0,0.05,0.1,0.15 --out v11
+  --add: 마지막 계열의 비중 w 목록. 나머지 계열은 --base 비율 × (1 − w). 격자 대신 이 행들만 채점한다
+  --out: 결과 폴더 (outputs/<out>, 기본 v9)
 
 채점은 12_cv_eval과 같은 정의: 폴드 시작 시점에 이력 있는 발전소만, 참조 구성 G1/G2 합,
 W = Σ 0.1·SMP·k·|α·예측 − 실적|, α는 항상 다른 폴드에서 정한다(가중 L1 최적 배율).
@@ -18,11 +21,18 @@ from oibc.config import PENALTY_RATE, ROOT
 from oibc.cv import FOLDS, OUT_CV, W17, eff_source, site_efficiency
 from oibc.io import k_of, load_generation, load_sites, load_smp_train
 
-OUT = ROOT / "outputs" / "v9"
+args = sys.argv[1:]
+opts = {}
+for key in ("--base", "--add", "--out"):
+    if key in args:
+        i = args.index(key)
+        opts[key] = args[i + 1]
+        del args[i:i + 2]
+OUT = ROOT / "outputs" / opts.get("--out", "v9")
 OUT.mkdir(parents=True, exist_ok=True)
 OOF = OUT_CV / "oof"
 fams = {}
-for a in sys.argv[1:]:
+for a in args:
     k, v = a.split("=")
     fams[k] = v.split(",")
 assert fams, "계열을 하나 이상 지정"
@@ -56,6 +66,7 @@ def fam_group(fold):
         g = df.assign(group=df["site_id"].map(ref)).groupby(["group", "ts"])[["pred", "energy"]].sum().reset_index()
         P.append(g["pred"].to_numpy())
     w = PENALTY_RATE * g["ts"].map(smp).to_numpy() * k_of(g["ts"])
+    REV[fold] = float((g["ts"].map(smp).to_numpy() * g["energy"].to_numpy()).sum())
     return np.vstack(P), g["energy"].to_numpy(), w
 
 
@@ -67,9 +78,15 @@ def best_scale(p, e, w):
     return float(r[o][np.searchsorted(c, c[-1] / 2)])
 
 
+REV = {}
 D = {f: fam_group(f) for f in FOLDS}
 log(f"계열 {fams}")
-grid = [np.array(c) / 10 for c in itertools.product(range(11), repeat=len(names)) if sum(c) == 10]
+if "--add" in opts:
+    b = np.array([float(x) for x in opts["--base"].split(",")])
+    assert len(b) == len(names) - 1 and abs(b.sum() - 1) < 1e-9, f"--base {b}"
+    grid = [np.append(b * (1 - a), a) for a in (float(x) for x in opts["--add"].split(","))]
+else:
+    grid = [np.array(c) / 10 for c in itertools.product(range(11), repeat=len(names)) if sum(c) == 10]
 other = {"A": "B", "B": "A"}
 rows = []
 for wv in grid:
@@ -78,6 +95,8 @@ for wv in grid:
     for f in FOLDS:
         a = best_scale(blend[other[f]], D[other[f]][1], D[other[f]][2])
         rec[f"W_{f}_xa"] = float((D[f][2] * np.abs(a * blend[f] - D[f][1])).sum())
+        rec[f"S_{f}_xa"] = REV[f] - rec[f"W_{f}_xa"]
+        rec[f"xa_{f}"] = a
         rec[f"a_{f}"] = best_scale(blend[f], D[f][1], D[f][2])
     rows.append(rec)
 res = pd.DataFrame(rows)
@@ -85,12 +104,23 @@ res["sum_rel"] = res["W_A_xa"] / res["W_A_xa"].max() + res["W_B_xa"] / res["W_B_
 res.to_csv(OUT / "14_blend.csv", index=False)
 
 # 교차 선택: 한 폴드에서 최적인 가중치를 다른 폴드에서 채점
-md = ["# 14 계열 혼합 가중치 ([이력] 조건, 참조 구성, 교차 α)", "", f"계열: {fams}", ""]
-for n in names:
+md = ["# 14 계열 혼합 가중치 ([이력] 조건, 참조 구성, 교차 α)", "", f"계열: {fams}", "",
+      f"매전수익(실적 기준, [이력] 발전소): A {REV['A']:,.0f} / B {REV['B']:,.0f}. S = 매전수익 − W", ""]
+if "--add" in opts:
+    r0 = res.iloc[0]
+    md += [f"| {' | '.join(names)} | W_A | ΔA | W_B | ΔB | S_A | S_B | 교차 α A/B | 최적 α A/B |",
+           "|" + "---|" * (len(names) + 8)]
+    for _, q in res.iterrows():
+        md.append(f"| {' | '.join(f'{q[n]:.4f}' for n in names)} | {q.W_A_xa:,.0f} | {(q.W_A_xa / r0.W_A_xa - 1) * 100:+.2f}% "
+                  f"| {q.W_B_xa:,.0f} | {(q.W_B_xa / r0.W_B_xa - 1) * 100:+.2f}% | {q.S_A_xa:,.0f} | {q.S_B_xa:,.0f} "
+                  f"| {q.xa_A:.4f}/{q.xa_B:.4f} | {q.a_A:.4f}/{q.a_B:.4f} |")
+    md.append("")
+for n in names if "--add" not in opts else []:
     one = res[res[n] == 1.0].iloc[0]
     md.append(f"- {n} 단독: W_A {one.W_A_xa/1e6:,.2f}M / W_B {one.W_B_xa/1e6:,.2f}M")
-eq = res.iloc[(res[names] - 1 / len(names)).abs().sum(axis=1).argmin()]
-md.append(f"- 균등에 가장 가까운 {dict(eq[names])}: W_A {eq.W_A_xa/1e6:,.2f}M / W_B {eq.W_B_xa/1e6:,.2f}M")
+if "--add" not in opts:
+    eq = res.iloc[(res[names] - 1 / len(names)).abs().sum(axis=1).argmin()]
+    md.append(f"- 균등에 가장 가까운 {dict(eq[names])}: W_A {eq.W_A_xa/1e6:,.2f}M / W_B {eq.W_B_xa/1e6:,.2f}M")
 for f in FOLDS:
     b = res.loc[res[f"W_{f}_xa"].idxmin()]
     o = other[f]

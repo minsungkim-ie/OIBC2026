@@ -20,7 +20,7 @@ from oibc.config import ROUNDS
 from oibc.cv import (CACHE, EFF_FEATS, ES_DAYS, FOLDS, OUT_CV, PIT_MODES, VARIANTS, _eff_prep, attach_eff,
                      eff_source, predict_cf, target_and_weight)
 from oibc.io import load_generation, load_sites
-from oibc.model import fit_lgbm, importance_top
+from oibc.model import fit_model, importance_top
 
 names = sys.argv[1:] or list(VARIANTS)
 sites = load_sites()
@@ -57,8 +57,9 @@ for r in ROUNDS:
             tr = base & (d["ts"] >= t0) & (d["ts"] <= es_cut)
             es = base & (d["ts"] > es_cut) & (d["ts"] <= t1)
             y, w = target_and_weight(d, target)
-            m = fit_lgbm(d[tr], y[tr.to_numpy()], w[tr.to_numpy()], d[es], y[es.to_numpy()], w[es.to_numpy()],
-                         feats=feats)
+            algo = VARIANTS[name].get("algo", "lgb")
+            m = fit_model(algo, d[tr], y[tr.to_numpy()], w[tr.to_numpy()], d[es], y[es.to_numpy()],
+                          w[es.to_numpy()], feats=feats, seed=VARIANTS[name].get("seed"))
             va = (d["ts"] >= v0) & (d["ts"] <= v1)
             dv = d[va]
             pred = predict_cf(m, dv, feats, target) * dv["capacity_kw"].to_numpy("float64")
@@ -67,7 +68,8 @@ for r in ROUNDS:
                           "pred_kwh": pred}).to_parquet(out, index=False)
             info = dict(best_iter=int(m.best_iteration_), n_train=int(tr.sum()), n_es=int(es.sum()))
             json.dump(info, open(OOF / f"{name}_{fold}_r{r}.json", "w"))
-            importance_top(m, feats).to_csv(OOF / f"{name}_{fold}_r{r}_imp.csv", index=False)
+            if algo == "lgb":
+                importance_top(m, feats).to_csv(OOF / f"{name}_{fold}_r{r}_imp.csv", index=False)
             log(f"  {name} fold {fold} r{r}: {info}, 검증 {len(dv):,}행")
             del m, dv
             gc.collect()

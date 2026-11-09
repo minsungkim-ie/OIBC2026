@@ -8,6 +8,9 @@
   v9 = python scripts/13_final.py v9 v2 csi v2e csie v2e_c csie_c --weights 0.125,0.125,0.125,0.125,0.25,0.25 --comp submissions/v4/composition.csv --alpha 0.9729
   --weights: 변형별 혼합 가중치(합 1, 변형 순서대로). 없으면 단순 평균
   --alpha-src est: 배율을 "[이력]" 조건(평가 연도와 같은 조건) 결과에서 고른다 (기본은 전체 발전소)
+  --comp-folds A,B: 구성을 이 폴드들의 잔차를 시간축으로 이어 붙여 찾는다. 이때는 각 폴드 시작 시점에 이력 있는
+    발전소만 잔차를 넣는다([이력] 조건, 나머지는 0). 없으면 기존 방식(폴드 B, 전체 발전소)
+  v10 = python scripts/13_final.py v10 v2 csi v2e csie v2e_c csie_c --weights 0.125,0.125,0.125,0.125,0.25,0.25 --alpha 0.9729 --comp-folds A,B
 
 1. α = 2폴드 검증에서 이 앙상블의 해마다 최적 배율 평균 (12_cv_results.csv)
 2. 구성 = 폴드 B(2024-06~2025-05) 앙상블 잔차로 지역탐색. 홀수주 최적화 → 짝수주 채점에서 개선이 유지될 때만 채택
@@ -37,7 +40,7 @@ from oibc.scoring import residual_matrix
 
 args = sys.argv[1:]
 opts = {}
-for key in ("--comp", "--alpha", "--alpha-src", "--weights"):
+for key in ("--comp", "--alpha", "--alpha-src", "--weights", "--comp-folds"):
     if key in args:
         i = args.index(key)
         opts[key] = args[i + 1]
@@ -84,14 +87,31 @@ if "--comp" in opts:
     grp = comp.set_index("site_id")["group"]
     log(f"구성: {opts['--comp']} 사용 (G1 {cap[(comp['group'] == 'G1').to_numpy()].sum():,.1f} kW)")
 else:
-    fb = {(v, r): pd.read_parquet(OOF / f"{v}_B_r{r}.parquet") for v in VARS for r in ROUNDS}
-    oof = fb[(VARS[0], 10)][["site_id", "ts", "energy"]].copy()
-    oof["pred_kwh"] = alpha * blend({k: d["pred_kwh"].to_numpy() for k, d in fb.items()})
-    ts_index = hourly_index(*FOLDS["B"][2:])
-    R, w = residual_matrix(oof, order, ts_index, load_smp_train().set_index("ts")["smp"])
+    cfolds = opts["--comp-folds"].split(",") if "--comp-folds" in opts else ["B"]
+    est_only = "--comp-folds" in opts
+    smp_tr = load_smp_train().set_index("ts")["smp"]
+    if est_only:
+        _src = eff_source(load_generation(), sites)
+    Rs, ws, odds = [], [], []
+    for fo in cfolds:
+        fb = {(v, r): pd.read_parquet(OOF / f"{v}_{fo}_r{r}.parquet") for v in VARS for r in ROUNDS}
+        oof = fb[(VARS[0], 10)][["site_id", "ts", "energy"]].copy()
+        oof["pred_kwh"] = alpha * blend({k: d["pred_kwh"].to_numpy() for k, d in fb.items()})
+        if est_only:   # 폴드 시작 시점에 직전 1년 이력이 있는 발전소만 (12_cv_eval의 [이력] 정의와 같다)
+            e = site_efficiency(_src, FOLDS[fo][1])
+            est = set(sites["site_id"].to_numpy()[e.index[e["eff_mid"].notna()].to_numpy()])
+            oof = oof[oof["site_id"].isin(est) & oof["energy"].notna()]
+            log(f"구성 잔차 폴드 {fo}: 이력 있는 발전소 {len(est)}곳")
+        ts_index = hourly_index(*FOLDS[fo][2:])
+        Rf, wf = residual_matrix(oof, order, ts_index, smp_tr)
+        tdate = (ts_index - pd.Timedelta(hours=1)).floor("D")
+        Rs.append(Rf)
+        ws.append(wf)
+        odds.append((((tdate - tdate[0]).days // 7).to_numpy() % 2) == 1)
+        del fb, oof
+    R, w, odd = np.hstack(Rs), np.concatenate(ws), np.concatenate(odds)
+    del Rs
     ref_x = (sites["current_group"] == "B").astype(np.int8).to_numpy()
-    tdate = (ts_index - pd.Timedelta(hours=1)).floor("D")
-    odd = (((tdate - tdate[0]).days // 7).to_numpy() % 2) == 1
 
 
     def multi_start(Rm, wm):
@@ -114,7 +134,7 @@ else:
         f"(G1 {cap[x == 0].sum():,.1f} kW / G2 {cap[x == 1].sum():,.1f} kW)")
     comp = pd.DataFrame({"site_id": order, "group": np.where(x == 0, "G1", "G2")})
     grp = comp.set_index("site_id")["group"]
-    del fb, oof, R
+    del R
     gc.collect()
 
 # 3·4. 최종 학습 → 평가 구간 예측

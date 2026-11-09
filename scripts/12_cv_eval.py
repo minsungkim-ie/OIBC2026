@@ -105,7 +105,15 @@ COMBOS = (("v2", "csi"), ("v1", "v2"), ("v1", "v2", "csi"), ("v2e", "csie"), ("v
           ("csi", "csie"), ("v2e", "csi"),
           # v8 후보: 시점 기준 효율
           ("v2y", "csiy"), ("v2", "csi", "v2y", "csiy"), ("v2m", "csim"), ("v2", "csi", "v2m", "csim"),
-          ("v2y", "csiy", "v2m", "csim"), ("v1", "v2", "csi", "v2y", "csiy"))
+          ("v2y", "csiy", "v2m", "csim"), ("v1", "v2", "csi", "v2y", "csiy"),
+          # v9 후보: 알고리즘·시드 다양화 (v7 = v2 + csi + v2e + csie 기준)
+          ("v2e", "csie", "v2e_s1", "csie_s1"),
+          ("v2e", "csie", "v2e_x", "csie_x"), ("v2e", "csie", "v2e_c", "csie_c"),
+          ("v2e", "csie", "v2e_x", "csie_x", "v2e_c", "csie_c"),
+          ("v2", "csi", "v2e", "csie", "v2e_x", "csie_x"), ("v2", "csi", "v2e", "csie", "v2e_c", "csie_c"),
+          ("v2", "csi", "v2e", "csie", "v2e_x", "csie_x", "v2e_c", "csie_c"),
+          ("v2", "csi", "v2e", "csie", "v2_x", "csi_x", "v2e_x", "csie_x", "v2_c", "csi_c", "v2e_c", "csie_c"),
+          ("v2", "csi", "v2e", "csie", "v2e_s1", "csie_s1", "v2e_x", "csie_x", "v2e_c", "csie_c"))
 
 for est in (False, True):
     for n in avail:

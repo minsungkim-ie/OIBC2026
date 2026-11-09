@@ -56,6 +56,18 @@ LGBM_PARAMS = dict(
 )
 EARLY_STOP = 200
 
+# v9: 앙상블 다양화용 다른 부스팅 라이브러리. 가중치는 평균 1로 정규화한 뒤 쓴다 (model.fit_model).
+# 값은 우리 LightGBM 설정(잎 63·최소 표본 100·열/행 0.8)과 비슷한 복잡도로 맞춘 것.
+XGB_PARAMS = dict(
+    objective="reg:absoluteerror", tree_method="hist", learning_rate=0.05, max_depth=7,
+    min_child_weight=100, subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
+    n_estimators=3000, eval_metric="mae", n_jobs=-1, max_bin=256,
+)
+CAT_PARAMS = dict(
+    loss_function="MAE", learning_rate=0.08, depth=7, l2_leaf_reg=3.0, iterations=3000,
+    thread_count=-1, verbose=200, allow_writing_files=False,
+)
+
 # baseline.py 근사 (참고용 비교군, objective l2)
 BASE_WA = ["wa_cloud", "wa_temp", "wa_humidity", "wa_rain", "wa_wind_speed", "wa_ground_press"]
 BASE_WB = ["wb_cloud", "wb_temp", "wb_rel_hum", "wb_uv_idx", "wb_precip_prob",

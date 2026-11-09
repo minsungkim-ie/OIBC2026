@@ -45,6 +45,17 @@ VARIANTS = {
     "csiy": dict(feats=FEATURES + EFF_FEATS, target="csi", eff="year"),
     "v2m": dict(feats=FEATURES + EFF_FEATS, target="cf", eff="month"),
     "csim": dict(feats=FEATURES + EFF_FEATS, target="csi", eff="month"),
+    # v9: 같은 피처·타깃을 다른 알고리즘(algo)·시드(seed)로 학습해 앙상블을 다양화. algo 없으면 LightGBM, seed 없으면 42
+    "v2e_s1": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, seed=1001),
+    "csie_s1": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, seed=1001),
+    "v2e_x": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="xgb"),
+    "csie_x": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="xgb"),
+    "v2e_c": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="cat"),
+    "csie_c": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="cat"),
+    "v2_x": dict(feats=FEATURES, target="cf", algo="xgb"),
+    "csi_x": dict(feats=FEATURES, target="csi", algo="xgb"),
+    "v2_c": dict(feats=FEATURES, target="cf", algo="cat"),
+    "csi_c": dict(feats=FEATURES, target="csi", algo="cat"),
 }
 PIT_MODES = ("year", "month")
 EFF_YEAR_START_MONTH = 6        # 연 단위 블록은 6월 1일 시작 (평가 구간 2025-06-01 ~ 와 같은 모양)

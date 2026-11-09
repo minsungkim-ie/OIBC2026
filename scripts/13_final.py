@@ -2,9 +2,11 @@
 
 사용: python scripts/13_final.py <버전> <변형...>
   v4 = python scripts/13_final.py v4 v2 csi      (인자 없으면 v4)
-  v7 = python scripts/13_final.py v7 v2 csi v2e csie --comp submissions/v4/composition.csv --alpha 0.9779
+  v7 = python scripts/13_final.py v7 v2 csi v2e csie --comp submissions/v4/composition.csv --alpha 0.9729
   v8 후보 = python scripts/13_final.py v8 v2y csiy --alpha-src est
   --comp: 구성 최적화 대신 이 구성 파일 사용, --alpha: 검증 결과 대신 이 배율 사용
+  v9 = python scripts/13_final.py v9 v2 csi v2e csie v2e_c csie_c --weights 0.125,0.125,0.125,0.125,0.25,0.25 --comp submissions/v4/composition.csv --alpha 0.9729
+  --weights: 변형별 혼합 가중치(합 1, 변형 순서대로). 없으면 단순 평균
   --alpha-src est: 배율을 "[이력]" 조건(평가 연도와 같은 조건) 결과에서 고른다 (기본은 전체 발전소)
 
 1. α = 2폴드 검증에서 이 앙상블의 해마다 최적 배율 평균 (12_cv_results.csv)
@@ -29,13 +31,13 @@ from oibc.cv import (EFF_FEATS, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VA
                      eff_source, predict_cf, site_efficiency, site_efficiency_pit, target_and_weight)
 from oibc.features import build_frame, clean_flags
 from oibc.io import hourly_index, load_generation, load_sites, load_smp_test, load_smp_train
-from oibc.model import fit_lgbm
+from oibc.model import fit_model
 from oibc.pipeline import station_tables
 from oibc.scoring import residual_matrix
 
 args = sys.argv[1:]
 opts = {}
-for key in ("--comp", "--alpha", "--alpha-src"):
+for key in ("--comp", "--alpha", "--alpha-src", "--weights"):
     if key in args:
         i = args.index(key)
         opts[key] = args[i + 1]
@@ -43,10 +45,13 @@ for key in ("--comp", "--alpha", "--alpha-src"):
 VERSION = args[0] if args else "v4"
 VARS = tuple(args[1:]) or V4_VARIANTS
 assert all(v in VARIANTS for v in VARS), f"모르는 변형: {[v for v in VARS if v not in VARIANTS]}"
+WTS = (np.array([float(x) for x in opts["--weights"].split(",")]) if "--weights" in opts
+       else np.full(len(VARS), 1 / len(VARS)))
+assert len(WTS) == len(VARS) and abs(WTS.sum() - 1) < 1e-9, f"가중치 {WTS}"
 SUB = ROOT / "submissions" / VERSION
 OUT = OUT_CV / VERSION if VERSION != "v4" else OUT_CV
 OUT.mkdir(parents=True, exist_ok=True)
-log(f"{VERSION}: 변형 {VARS}")
+log(f"{VERSION}: 변형 {VARS}, 가중치 {WTS.tolist()}")
 SUB.mkdir(parents=True, exist_ok=True)
 OOF = OUT_CV / "oof"
 sites = load_sites()
@@ -67,8 +72,8 @@ else:
 
 
 def blend(parts):
-    """parts: {(variant, round): array} → 변형별 라운드 가중 후 변형 평균."""
-    return np.mean([(1 - W17) * parts[(v, 10)] + W17 * parts[(v, 17)] for v in VARS], axis=0)
+    """parts: {(variant, round): array} → 변형별 라운드 가중 후 변형 가중 평균(WTS)."""
+    return np.sum([wv * ((1 - W17) * parts[(v, 10)] + W17 * parts[(v, 17)]) for wv, v in zip(WTS, VARS)], axis=0)
 
 
 # 2. 구성 (폴드 B 잔차, 또는 --comp 파일)
@@ -152,7 +157,8 @@ for r in ROUNDS:
                 d[c], dt[c] = eff_tab[mode][0][c], eff_tab[mode][1][c]
         n_iter = json.load(open(OOF / f"{v}_B_r{r}.json"))["best_iter"]
         y, wt = target_and_weight(d, target)
-        m = fit_lgbm(d[sel], y[sel], wt[sel], n_estimators=n_iter, feats=feats)
+        m = fit_model(VARIANTS[v].get("algo", "lgb"), d[sel], y[sel], wt[sel], n_estimators=n_iter, feats=feats,
+                      seed=VARIANTS[v].get("seed"))
         preds[(v, r)] = predict_cf(m, dt, feats, target) * dt["capacity_kw"].to_numpy("float64")
         log(f"{v} round {r} (트리 {n_iter}개): 예측 합계 {preds[(v, r)].sum() / 1e6:,.2f} GWh")
         del m

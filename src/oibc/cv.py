@@ -6,7 +6,7 @@
 import numpy as np
 import pandas as pd
 
-from .config import FEATURES, ROOT, _ts
+from .config import FEATURES, ROOT, TZ, _ts
 
 OUT_CV = ROOT / "outputs" / "v4"
 CACHE = OUT_CV / "cache"
@@ -30,24 +30,33 @@ V1_FEATURES = ["site_id"] + [f for f in FEATURES if f not in ("dow", "weekend")]
 EFF_FEATS = ["eff_am", "eff_mid", "eff_pm", "eff_days"]
 EFF_WINDOW_DAYS = 365
 
-# eff=True면 학습 구간 마지막 EFF_WINDOW_DAYS일로 site_efficiency를 계산해 붙인다
+# eff 값에 따라 효율 피처를 붙이는 방식이 다르다.
+#   True    : (v7) 학습 구간 마지막 EFF_WINDOW_DAYS일로 한 번 재서 학습·검증 행 전부에 같은 값 → 학습 행은 자기 정답이 피처에 섞인다
+#   "year"  : (v8 후보) 시점 기준. 6월 1일마다 그 직전 1년 실적으로 다시 잰다. 평가 연도(1년 내내 고정)와 같은 조건
+#   "month" : (v8 후보) 시점 기준. 매달 1일마다 직전 1년 실적으로 다시 잰다
+# 시점 기준은 블록 첫 대상일의 예측시점(전일 17:00)까지의 실적만 쓴다 (CLAUDE.md 규칙 2·6).
 VARIANTS = {
     "v1": dict(feats=V1_FEATURES, target="cf"),
     "v2": dict(feats=FEATURES, target="cf"),
     "csi": dict(feats=FEATURES, target="csi"),
     "v2e": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True),
     "csie": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True),
+    "v2y": dict(feats=FEATURES + EFF_FEATS, target="cf", eff="year"),
+    "csiy": dict(feats=FEATURES + EFF_FEATS, target="csi", eff="year"),
+    "v2m": dict(feats=FEATURES + EFF_FEATS, target="cf", eff="month"),
+    "csim": dict(feats=FEATURES + EFF_FEATS, target="csi", eff="month"),
 }
+PIT_MODES = ("year", "month")
+EFF_YEAR_START_MONTH = 6        # 연 단위 블록은 6월 1일 시작 (평가 구간 2025-06-01 ~ 와 같은 모양)
+EFF_CUTOFF = pd.Timedelta(hours=7)   # 대상일 00:00 − 7h = 전일 17:00 (예측시점). ts ≤ 이 시각인 실적만 사용
 
 
-def site_efficiency(d, end):
-    """d: site_id·ts·energy·capacity_kw·keep·elev. end까지의 학습 데이터만 쓴다(검증·평가 구간 실적 미사용).
+def _eff_prep(d):
+    """효율 계산 전처리: keep·주간 행만, 같은 시각 전 발전소 중앙값 대비 비율(ratio)과 시간대(band).
 
-    반환: site_id별 eff_am(8~10시)·eff_mid(11~15시)·eff_pm(16~18시) = 같은 시각 전 발전소 설비이용률 중앙값 대비
-    그 발전소 비율의 중앙값, eff_days = 효율을 잰 날 수. 이력이 없는 발전소는 NaN(LightGBM이 결측으로 처리).
+    ref(같은 시각 중앙값)는 그 시각의 행끼리만 계산하므로 창(window)을 나중에 잘라도 결과가 같다.
     """
-    start = end - pd.Timedelta(days=EFF_WINDOW_DAYS)
-    m = (d["ts"] > start) & (d["ts"] <= end) & d["keep"] & (d["elev"] > 0)
+    m = d["keep"].to_numpy(bool) & (d["elev"] > 0).to_numpy()
     x = d.loc[m, ["site_id", "ts", "energy", "capacity_kw"]].copy()
     x["cf"] = x["energy"] / x["capacity_kw"]
     x["ref"] = x.groupby("ts")["cf"].transform("median")
@@ -55,9 +64,107 @@ def site_efficiency(d, end):
     x["ratio"] = x["cf"] / x["ref"]
     h = x["ts"].dt.hour
     x["band"] = np.select([h.between(8, 10), h.between(11, 15), h.between(16, 18)], ["eff_am", "eff_mid", "eff_pm"], "")
-    out = x[x["band"] != ""].pivot_table(index="site_id", columns="band", values="ratio", aggfunc="median")
-    out["eff_days"] = x.groupby("site_id")["ts"].apply(lambda t: (t - pd.Timedelta(hours=1)).dt.floor("D").nunique())
+    x["day"] = (x["ts"] - pd.Timedelta(hours=1)).dt.floor("D")
+    return x[["site_id", "ts", "ratio", "band", "day"]].reset_index(drop=True)
+
+
+def _eff_window(x, end):
+    """_eff_prep 결과에서 (end − EFF_WINDOW_DAYS, end] 창의 발전소별 효율 (site_id 인덱스, EFF_FEATS 열)."""
+    w = x[(x["ts"] > end - pd.Timedelta(days=EFF_WINDOW_DAYS)) & (x["ts"] <= end)]
+    out = w[w["band"] != ""].pivot_table(index="site_id", columns="band", values="ratio", aggfunc="median")
+    out["eff_days"] = w.groupby("site_id")["day"].nunique()
     return out.reindex(columns=EFF_FEATS).astype("float32")
+
+
+def site_efficiency(d, end):
+    """(v7 방식) d: site_id·ts·energy·capacity_kw·keep·elev. end까지의 학습 데이터만 쓴다.
+
+    반환: site_id별 eff_am(8~10시)·eff_mid(11~15시)·eff_pm(16~18시) = 같은 시각 전 발전소 설비이용률 중앙값 대비
+    그 발전소 비율의 중앙값, eff_days = 효율을 잰 날 수. 이력이 없는 발전소는 NaN(LightGBM이 결측으로 처리).
+    v7 재현을 위해 결과는 이전 구현과 같다.
+    """
+    start = end - pd.Timedelta(days=EFF_WINDOW_DAYS)
+    win = d[(d["ts"] > start) & (d["ts"] <= end)]
+    return _eff_window(_eff_prep(win), end)
+
+
+def eff_source(gen, sites):
+    """발전량만으로 효율 계산용 프레임을 만든다 (예보 불필요 → 학습 구간 앞쪽 이력까지 쓸 수 있다).
+
+    gen: load_generation 결과(site_id 문자열·ts·energy). 반환 site_id는 build_frame과 같은 정수 코드.
+    keep은 clean_flags(음수·cf>1.2·주간 전부 0인 날 제외)와 같다.
+    """
+    from .features import clean_flags
+    from .solar import solar
+    sc = {s: i for i, s in enumerate(sites["site_id"])}
+    d = gen[["site_id", "ts", "energy"]].merge(sites[["site_id", "capacity_kw", "lat", "lon"]], on="site_id",
+                                               how="inner")
+    d["site_id"] = d["site_id"].map(sc).astype("int32")
+    d["elev"], _, _ = solar(pd.DatetimeIndex(d["ts"]), d["lat"].to_numpy(), d["lon"].to_numpy())
+    keep, _ = clean_flags(d)
+    return d[["site_id", "ts", "energy", "capacity_kw", "elev"]].assign(keep=keep.to_numpy())
+
+
+def eff_blocks(ts, mode, freeze_at=None):
+    """행마다 효율을 잴 블록의 첫 대상일(00:00, KST). freeze_at 이후 행은 freeze_at의 대상일로 고정(평가 연도 조건)."""
+    td = (pd.Series(pd.DatetimeIndex(ts)) - pd.Timedelta(hours=1)).dt.floor("D")
+    u = pd.DatetimeIndex(td.unique())
+    if mode == "month":
+        y, mth = u.year, u.month
+    elif mode == "year":
+        y = np.where(u.month >= EFF_YEAR_START_MONTH, u.year, u.year - 1)
+        mth = np.full(len(u), EFF_YEAR_START_MONTH)
+    else:
+        raise ValueError(mode)
+    start = pd.to_datetime(pd.DataFrame({"year": y, "month": mth, "day": 1})).dt.tz_localize(TZ)
+    blk = td.map(pd.Series(start.to_numpy(), index=u))
+    if freeze_at is not None:
+        f0 = (pd.Timestamp(freeze_at) - pd.Timedelta(hours=1)).floor("D")
+        blk = blk.where(pd.Series(pd.DatetimeIndex(ts)) < pd.Timestamp(freeze_at), f0)
+    return pd.DatetimeIndex(blk)
+
+
+def site_efficiency_pit(x, site_id, ts, mode, freeze_at=None, log=None):
+    """시점 기준 효율 피처. x = _eff_prep(eff_source(...)).
+
+    각 행은 자기 블록 첫 대상일의 예측시점(전일 17:00)까지, 직전 EFF_WINDOW_DAYS일 실적으로 잰 효율을 받는다.
+    → 학습 행의 피처에 그 행의 정답(또는 이후 실적)이 들어가지 않는다.
+    반환: 행 순서 그대로의 DataFrame (EFF_FEATS 열, float32). 이력이 없으면 NaN.
+    """
+    blk = eff_blocks(ts, mode, freeze_at)
+    tabs = []
+    for b in pd.DatetimeIndex(blk.unique()).sort_values():
+        e = _eff_window(x, b - EFF_CUTOFF)
+        e.index.name = "site_id"
+        tabs.append(e.reset_index().assign(blk=b))
+        if log:
+            log(f"    효율 블록 {b.date()}: {e['eff_mid'].notna().sum()}곳, "
+                f"eff_days 중앙값 {e['eff_days'].median():.0f}")
+    t = pd.concat(tabs, ignore_index=True)
+    t["site_id"] = t["site_id"].astype("int32")
+    left = pd.DataFrame({"site_id": np.asarray(site_id, dtype="int32"), "blk": blk})
+    out = left.merge(t, on=["site_id", "blk"], how="left")
+    assert len(out) == len(left)
+    return out[EFF_FEATS].astype("float32").reset_index(drop=True)
+
+
+def attach_eff(d, name, eff_x=None, fit_end=None, freeze_at=None, log=None):
+    """변형 name의 효율 피처를 d에 붙인다 (제자리). 효율 피처가 없는 변형이면 아무것도 안 한다.
+
+    True(v7)   : site_efficiency(d, fit_end) 한 값을 전 행에
+    year/month : site_efficiency_pit(eff_x, ...)  (freeze_at 이후 행은 고정)
+    """
+    mode = VARIANTS[name].get("eff")
+    if not mode:
+        return
+    if mode is True:
+        eff = site_efficiency(d, fit_end)
+        for c in EFF_FEATS:
+            d[c] = d["site_id"].map(eff[c]).astype("float32")
+    else:
+        e = site_efficiency_pit(eff_x, d["site_id"].to_numpy(), d["ts"], mode, freeze_at, log)
+        for c in EFF_FEATS:
+            d[c] = e[c].to_numpy()
 
 
 def clear_sky_cf(cosz):

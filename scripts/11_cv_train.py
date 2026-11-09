@@ -1,6 +1,12 @@
 """2폴드 검증 학습: 변형 × 폴드 × 라운드마다 학습 → 검증 연도 발전소별 예측(배율 1.0) 저장.
 
 사용: python scripts/11_cv_train.py v1 v2 csi   (인자 없으면 전부)
+     python scripts/11_cv_train.py v2y csiy v2m csim   (v8 후보: 시점 기준 효율 피처)
+
+효율 피처 변형
+- eff=True(v2e·csie, v7): 학습 구간 마지막 1년으로 잰 한 값을 학습·조기종료·검증 행 전부에 붙인다.
+- eff="year"/"month"(v2y·csiy·v2m·csim): 학습·조기종료 행은 시점 기준(블록 첫 대상일 전일 17시까지의 직전 1년),
+  검증 행은 폴드 시작 시점 값으로 고정한다(평가 연도와 같은 조건). 이력은 발전량 전체(2021-01-19~)에서 잰다.
 """
 import gc
 import json
@@ -11,15 +17,22 @@ import numpy as np
 import pandas as pd
 
 from oibc.config import ROUNDS
-from oibc.cv import (CACHE, EFF_FEATS, ES_DAYS, FOLDS, OUT_CV, VARIANTS, predict_cf, site_efficiency,
-                     target_and_weight)
-from oibc.io import load_sites
+from oibc.cv import (CACHE, EFF_FEATS, ES_DAYS, FOLDS, OUT_CV, PIT_MODES, VARIANTS, _eff_prep, attach_eff,
+                     eff_source, predict_cf, target_and_weight)
+from oibc.io import load_generation, load_sites
 from oibc.model import fit_lgbm, importance_top
 
 names = sys.argv[1:] or list(VARIANTS)
 sites = load_sites()
 OOF = OUT_CV / "oof"
 OOF.mkdir(parents=True, exist_ok=True)
+unknown = [n for n in names if n not in VARIANTS]
+assert not unknown, f"모르는 변형: {unknown}"
+
+eff_x = None
+if any(VARIANTS[n].get("eff") in PIT_MODES for n in names):
+    eff_x = _eff_prep(eff_source(load_generation(), sites))
+    log(f"시점 기준 효율용 이력 {len(eff_x):,}행 ({eff_x['ts'].min()} ~ {eff_x['ts'].max()})")
 
 
 for r in ROUNDS:
@@ -34,12 +47,11 @@ for r in ROUNDS:
                 log(f"  {out.name} 이미 있음 → 건너뜀")
                 continue
             if VARIANTS[name].get("eff"):
-                eff = site_efficiency(d, t1)
-                for c in EFF_FEATS:
-                    d[c] = d["site_id"].map(eff[c]).astype("float32")
-                log(f"  {name} fold {fold}: 효율 피처 {eff['eff_mid'].notna().sum()}곳 "
-                    f"(eff_mid 중앙값 {eff['eff_mid'].median():.3f}, 5~95% {eff['eff_mid'].quantile(.05):.3f}"
-                    f"~{eff['eff_mid'].quantile(.95):.3f})")
+                attach_eff(d, name, eff_x=eff_x, fit_end=t1, freeze_at=v0, log=log)
+                vm = (d["ts"] >= v0) & (d["ts"] <= v1)
+                ev = d.loc[vm].groupby("site_id")["eff_mid"].first()
+                log(f"  {name} fold {fold}: 검증 행 효율 피처 {int(ev.notna().sum())}곳 "
+                    f"(eff_mid 중앙값 {ev.median():.3f}, 5~95% {ev.quantile(.05):.3f}~{ev.quantile(.95):.3f})")
             es_cut = t1 - pd.Timedelta(days=ES_DAYS)
             base = d["keep"] & (d["elev"] > 0)
             tr = base & (d["ts"] >= t0) & (d["ts"] <= es_cut)

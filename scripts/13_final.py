@@ -3,13 +3,17 @@
 사용: python scripts/13_final.py <버전> <변형...>
   v4 = python scripts/13_final.py v4 v2 csi      (인자 없으면 v4)
   v7 = python scripts/13_final.py v7 v2 csi v2e csie --comp submissions/v4/composition.csv --alpha 0.9779
+  v8 후보 = python scripts/13_final.py v8 v2y csiy --alpha-src est
   --comp: 구성 최적화 대신 이 구성 파일 사용, --alpha: 검증 결과 대신 이 배율 사용
+  --alpha-src est: 배율을 "[이력]" 조건(평가 연도와 같은 조건) 결과에서 고른다 (기본은 전체 발전소)
 
 1. α = 2폴드 검증에서 이 앙상블의 해마다 최적 배율 평균 (12_cv_results.csv)
 2. 구성 = 폴드 B(2024-06~2025-05) 앙상블 잔차로 지역탐색. 홀수주 최적화 → 짝수주 채점에서 개선이 유지될 때만 채택
 3. FINAL_TRAIN(2023-06~2025-05)으로 변형·라운드별 재학습. 트리 수 = 폴드 B best_iter (학습 기간 길이가 같다)
 4. 평가 구간 예측 → 그룹 합산 → submissions/<버전>/
-   효율 피처(eff=True 변형)는 FINAL_TRAIN 마지막 1년 실적으로 계산한다.
+   효율 피처: eff=True(v7) 변형은 FINAL_TRAIN 마지막 1년 실적으로 잰 한 값을 학습·평가 행에 붙인다.
+   eff="year"/"month" 변형은 학습 행에 시점 기준 값(블록 첫 대상일 전일 17시까지의 직전 1년),
+   평가 행에는 2025-05-31 17:00까지의 직전 1년 값(1년 내내 고정)을 붙인다.
 """
 import gc
 import json
@@ -21,8 +25,8 @@ import pandas as pd
 
 from oibc.composition import local_search, objective, random_feasible
 from oibc.config import FINAL_TRAIN, OPT_SEED0, OPT_STARTS, ROOT, ROUNDS
-from oibc.cv import (EFF_FEATS, FOLDS, OUT_CV, V4_VARIANTS, VARIANTS, W17, predict_cf, site_efficiency,
-                     target_and_weight)
+from oibc.cv import (EFF_FEATS, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VARIANTS, VARIANTS, W17, _eff_prep,
+                     eff_source, predict_cf, site_efficiency, site_efficiency_pit, target_and_weight)
 from oibc.features import build_frame, clean_flags
 from oibc.io import hourly_index, load_generation, load_sites, load_smp_test, load_smp_train
 from oibc.model import fit_lgbm
@@ -31,13 +35,14 @@ from oibc.scoring import residual_matrix
 
 args = sys.argv[1:]
 opts = {}
-for key in ("--comp", "--alpha"):
+for key in ("--comp", "--alpha", "--alpha-src"):
     if key in args:
         i = args.index(key)
         opts[key] = args[i + 1]
         del args[i:i + 2]
 VERSION = args[0] if args else "v4"
 VARS = tuple(args[1:]) or V4_VARIANTS
+assert all(v in VARIANTS for v in VARS), f"모르는 변형: {[v for v in VARS if v not in VARIANTS]}"
 SUB = ROOT / "submissions" / VERSION
 OUT = OUT_CV / VERSION if VERSION != "v4" else OUT_CV
 OUT.mkdir(parents=True, exist_ok=True)
@@ -54,7 +59,9 @@ if "--alpha" in opts:
     log(f"배율 α = {alpha:.4f} (지정값)")
 else:
     res = pd.read_csv(OUT_CV / "12_cv_results.csv").set_index("label")
-    label = " + ".join(VARS) + f" · w17={W17}"
+    label = (" + ".join(VARS) if len(VARS) > 1 else VARS[0]) + f" · w17={W17}"
+    if opts.get("--alpha-src") == "est":
+        label += " [이력]"
     alpha = float(res.loc[label, ["a_best_A", "a_best_B"]].mean())
     log(f"배율 α = {alpha:.4f} ({label}: A {res.loc[label, 'a_best_A']:.4f}, B {res.loc[label, 'a_best_B']:.4f})")
 
@@ -112,20 +119,37 @@ tabs_tr = station_tables("train", FINAL_TRAIN[0], FINAL_TRAIN[1], sites, log)
 tabs_te = station_tables("test", index[0], index[-1], sites, log)
 gen = load_generation(*FINAL_TRAIN)
 base_te = pd.MultiIndex.from_product([sites["site_id"], index], names=["site_id", "ts"]).to_frame(index=False)
+modes = {VARIANTS[v].get("eff") for v in VARS} - {None, False}
+eff_x = None
+if modes & set(PIT_MODES):
+    h0 = FINAL_TRAIN[0] - pd.Timedelta(days=EFF_WINDOW_DAYS + 31)     # 학습 첫 블록의 직전 1년 이력까지
+    eff_x = _eff_prep(eff_source(load_generation(h0, FINAL_TRAIN[1]), sites))
+    log(f"시점 기준 효율용 이력 {len(eff_x):,}행 ({eff_x['ts'].min()} ~ {eff_x['ts'].max()})")
 preds = {}
 for r in ROUNDS:
     d = build_frame(gen[["site_id", "ts", "energy"]], sites, *tabs_tr[r])
     keep, _ = clean_flags(d)
     sel = (keep & (d["elev"] > 0)).to_numpy()
     dt = build_frame(base_te, sites, *tabs_te[r])
-    if any(VARIANTS[v].get("eff") for v in VARS):
+    # 효율 피처 표: 방식(mode)별로 한 번씩 만들고, 변형마다 d·dt의 EFF_FEATS 열을 바꿔 끼운다
+    eff_tab = {}
+    if True in modes:
         eff = site_efficiency(d.assign(keep=keep.to_numpy()), FINAL_TRAIN[1])
-        for c in EFF_FEATS:
-            d[c] = d["site_id"].map(eff[c]).astype("float32")
-            dt[c] = dt["site_id"].map(eff[c]).astype("float32")
-        log(f"효율 피처 {eff['eff_mid'].notna().sum()}곳, eff_days 최소 {eff['eff_days'].min():.0f}일")
+        eff_tab[True] = tuple({c: s["site_id"].map(eff[c]).astype("float32").to_numpy() for c in EFF_FEATS}
+                              for s in (d, dt))
+        log(f"효율 피처(v7 방식) {eff['eff_mid'].notna().sum()}곳, eff_days 최소 {eff['eff_days'].min():.0f}일")
+    for mode in modes & set(PIT_MODES):
+        e_tr = site_efficiency_pit(eff_x, d["site_id"].to_numpy(), d["ts"], mode)
+        e_te = site_efficiency_pit(eff_x, dt["site_id"].to_numpy(), dt["ts"], mode, freeze_at=index[0], log=log)
+        eff_tab[mode] = ({c: e_tr[c].to_numpy() for c in EFF_FEATS}, {c: e_te[c].to_numpy() for c in EFF_FEATS})
+        log(f"효율 피처({mode}) 평가 행 {int(pd.Series(e_te['eff_mid'].to_numpy()).groupby(dt['site_id'].to_numpy()).first().notna().sum())}곳, "
+            f"eff_days 최소 {np.nanmin(e_te['eff_days'].to_numpy()):.0f}일")
     for v in VARS:
         feats, target = VARIANTS[v]["feats"], VARIANTS[v]["target"]
+        mode = VARIANTS[v].get("eff")
+        if mode:
+            for c in EFF_FEATS:
+                d[c], dt[c] = eff_tab[mode][0][c], eff_tab[mode][1][c]
         n_iter = json.load(open(OOF / f"{v}_B_r{r}.json"))["best_iter"]
         y, wt = target_and_weight(d, target)
         m = fit_lgbm(d[sel], y[sel], wt[sel], n_estimators=n_iter, feats=feats)

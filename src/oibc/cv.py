@@ -75,7 +75,22 @@ VARIANTS = {
     "csi_wa": dict(feats=FEATURES, target="csi", win="all"),
     "v2e_c_wa": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="cat", win="all"),
     "csie_c_wa": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="cat", win="all"),
+    # v13 후보: decay = 학습 끝에서 1년 멀어질 때마다 표본 가중치 × decay (최근 연도 중시)
+    "v2e_wad": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, win="all", decay=0.7),
+    "csie_wad": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, win="all", decay=0.7),
+    # v13 후보: lgbp = LightGBM 설정 덮어쓰기 (데이터가 늘어난 만큼 잎 수 확대)
+    "v2e_wal": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, win="all", lgbp=dict(num_leaves=127)),
+    "csie_wal": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, win="all", lgbp=dict(num_leaves=127)),
 }
+
+
+def decay_mult(name, ts, t1):
+    """변형의 decay에 따른 표본 가중치 배수: decay ** (학습 끝 t1에서 떨어진 햇수, 0부터 정수). 없으면 1."""
+    dec = VARIANTS[name].get("decay")
+    if dec is None:
+        return np.ones(len(ts))
+    age = ((pd.Timestamp(t1) - pd.DatetimeIndex(ts)) / pd.Timedelta(days=365.25)).to_numpy().astype(int)
+    return np.power(float(dec), np.maximum(age, 0))
 
 
 def train_start(name, t0, t1):

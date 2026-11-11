@@ -18,7 +18,8 @@ import pandas as pd
 
 from oibc.config import ROUNDS
 from oibc.cv import (CACHE, EFF_FEATS, ES_DAYS, FOLDS, OUT_CV, PIT_MODES, VARIANTS, _eff_prep, attach_eff,
-                     eff_source, predict_cf, target_and_weight, train_start)
+                     eff_source, predict_cf, target_and_weight, train_start,
+                     decay_mult)
 from oibc.io import load_generation, load_sites
 from oibc.model import fit_model, importance_top
 
@@ -57,9 +58,11 @@ for r in ROUNDS:
             tr = base & (d["ts"] >= train_start(name, t0, t1)) & (d["ts"] <= es_cut)
             es = base & (d["ts"] > es_cut) & (d["ts"] <= t1)
             y, w = target_and_weight(d, target)
+            w = w * decay_mult(name, d["ts"], t1)
             algo = VARIANTS[name].get("algo", "lgb")
             m = fit_model(algo, d[tr], y[tr.to_numpy()], w[tr.to_numpy()], d[es], y[es.to_numpy()],
-                          w[es.to_numpy()], feats=feats, seed=VARIANTS[name].get("seed"))
+                          w[es.to_numpy()], feats=feats, seed=VARIANTS[name].get("seed"),
+                          lgbp=VARIANTS[name].get("lgbp"))
             va = (d["ts"] >= v0) & (d["ts"] <= v1)
             dv = d[va]
             pred = predict_cf(m, dv, feats, target) * dv["capacity_kw"].to_numpy("float64")

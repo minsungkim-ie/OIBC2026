@@ -31,7 +31,7 @@ import pandas as pd
 
 from oibc.composition import local_search, objective, random_feasible
 from oibc.config import FINAL_TRAIN, OPT_SEED0, OPT_STARTS, ROOT, ROUNDS
-from oibc.cv import (CACHE, CV_START, EFF_FEATS, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VARIANTS, VARIANTS, W17, _eff_prep,
+from oibc.cv import (CACHE, CV_START, EFF_FEATS, decay_mult, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VARIANTS, VARIANTS, W17, _eff_prep,
                      eff_source, predict_cf, site_efficiency, site_efficiency_pit, target_and_weight)
 from oibc.features import build_frame, clean_flags
 from oibc.io import hourly_index, load_generation, load_sites, load_smp_test, load_smp_train
@@ -176,8 +176,9 @@ for r in ROUNDS:
         assert VARIANTS[v].get("win") in (None, "all"), v
         dtr, str_ = (dc, selc) if VARIANTS[v].get("win") == "all" else (d, sel)
         y, wt = target_and_weight(dtr, target)
+        wt = wt * decay_mult(v, dtr["ts"], FINAL_TRAIN[1])
         m = fit_model(VARIANTS[v].get("algo", "lgb"), dtr[str_], y[str_], wt[str_], n_estimators=n_iter, feats=feats,
-                      seed=VARIANTS[v].get("seed"))
+                      seed=VARIANTS[v].get("seed"), lgbp=VARIANTS[v].get("lgbp"))
         preds[(v, r)] = predict_cf(m, dt, feats, target) * dt["capacity_kw"].to_numpy("float64")
         log(f"{v} round {r} (트리 {n_iter}개): 예측 합계 {preds[(v, r)].sum() / 1e6:,.2f} GWh")
         del m

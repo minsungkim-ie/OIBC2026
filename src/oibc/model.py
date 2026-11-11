@@ -106,7 +106,8 @@ def fit_mlp(Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_epochs=None, feats=FE
     return wrap
 
 
-def fit_model(algo, Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_estimators=None, feats=FEATURES, seed=None):
+def fit_model(algo, Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_estimators=None, feats=FEATURES, seed=None,
+              lgbp=None):
     """algo: "lgb" | "xgb" | "cat" | "mlp".가중치는 평균 1로 정규화해 쓴다(XGB·Cat의 최소 잎 가중치가 표본 수 단위가 되게).
 
     조기종료는 검증 세트(Xes)가 있을 때만, 최종 학습은 n_estimators(폴드 B best_iter)로 고정.
@@ -114,7 +115,7 @@ def fit_model(algo, Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_estimators=No
     from .config import CAT_PARAMS, XGB_PARAMS, SEED
     seed = SEED if seed is None else seed
     if algo == "lgb":
-        p = dict(LGBM_PARAMS, seed=seed)
+        p = dict(LGBM_PARAMS, seed=seed, **(lgbp or {}))
         return fit_lgbm(Xtr, ytr, wtr, Xes, yes, wes, n_estimators=n_estimators, params=p, feats=feats)
     if algo == "mlp":
         return fit_mlp(Xtr, ytr, wtr, Xes, yes, wes, n_epochs=n_estimators, feats=feats, seed=seed)

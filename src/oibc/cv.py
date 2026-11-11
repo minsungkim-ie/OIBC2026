@@ -58,7 +58,34 @@ VARIANTS = {
     "csi_c": dict(feats=FEATURES, target="csi", algo="cat"),
     # v11: 신경망(sklearn MLP). site_id는 fit_mlp가 뺀다 (정수 코드를 연속값으로 넣지 않도록)
     "csie_m": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="mlp"),
+    # v12: 배깅 계열(sklearn RandomForest / ExtraTrees, 제곱오차). site_id는 fit_forest가 뺀다
+    "v2e_r": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="rf"),
+    "csie_r": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="rf"),
+    "v2e_t": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="et"),
+    "csie_t": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="et"),
+    # v12: CatBoost 다른 시드 (v9 이득을 만든 Cat 계열 강화)
+    "v2e_c1": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="cat", seed=1001),
+    "csie_c1": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="cat", seed=1001),
+    # v12: 학습 기간(win). 기본은 폴드 학습 구간 2년. 1 = 마지막 1년만, "all" = CV_START부터 (A는 2년 그대로, B는 3년)
+    "v2e_w1": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, win=1),
+    "csie_w1": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, win=1),
+    "v2e_wa": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, win="all"),
+    "csie_wa": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, win="all"),
+    "v2_wa": dict(feats=FEATURES, target="cf", win="all"),
+    "csi_wa": dict(feats=FEATURES, target="csi", win="all"),
+    "v2e_c_wa": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="cat", win="all"),
+    "csie_c_wa": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="cat", win="all"),
 }
+
+
+def train_start(name, t0, t1):
+    """변형의 학습 시작 시각. win 없으면 폴드 기본 t0."""
+    win = VARIANTS[name].get("win")
+    if win is None:
+        return t0
+    if win == "all":
+        return CV_START
+    return t1 - pd.DateOffset(years=int(win)) + pd.Timedelta(hours=1)
 PIT_MODES = ("year", "month")
 EFF_YEAR_START_MONTH = 6        # 연 단위 블록은 6월 1일 시작 (평가 구간 2025-06-01 ~ 와 같은 모양)
 EFF_CUTOFF = pd.Timedelta(hours=7)   # 대상일 00:00 − 7h = 전일 17:00 (예측시점). ts ≤ 이 시각인 실적만 사용

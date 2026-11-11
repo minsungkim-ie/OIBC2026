@@ -8,6 +8,8 @@
   v9 = python scripts/13_final.py v9 v2 csi v2e csie v2e_c csie_c --weights 0.125,0.125,0.125,0.125,0.25,0.25 --comp submissions/v4/composition.csv --alpha 0.9729
   v11 = python scripts/13_final.py v11 v2 csi v2e csie v2e_c csie_c csie_m --weights 0.1125,0.1125,0.1125,0.1125,0.225,0.225,0.1 --comp submissions/v4/composition.csv --alpha 0.9768
         (csie_m = MLP, algo="mlp". 최종 학습 에폭 = 폴드 B 최적 에폭, 학습률 일정은 같은 고정 계단)
+  v12 = python scripts/13_final.py v12 v2_wa csi_wa v2e_wa csie_wa v2e_c_wa csie_c_wa --weights 0.125,0.125,0.125,0.125,0.25,0.25 --comp submissions/v4/composition.csv --alpha 0.9717
+        (win="all" 변형 = 2폴드 캐시 프레임으로 2021-06~2025-05 학습 구간 전체 4년 학습. 트리 수 = 폴드 B(3년 학습) best_iter)
   --weights: 변형별 혼합 가중치(합 1, 변형 순서대로). 없으면 단순 평균
   --alpha-src est: 배율을 "[이력]" 조건(평가 연도와 같은 조건) 결과에서 고른다 (기본은 전체 발전소)
 
@@ -29,7 +31,7 @@ import pandas as pd
 
 from oibc.composition import local_search, objective, random_feasible
 from oibc.config import FINAL_TRAIN, OPT_SEED0, OPT_STARTS, ROOT, ROUNDS
-from oibc.cv import (EFF_FEATS, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VARIANTS, VARIANTS, W17, _eff_prep,
+from oibc.cv import (CACHE, CV_START, EFF_FEATS, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VARIANTS, VARIANTS, W17, _eff_prep,
                      eff_source, predict_cf, site_efficiency, site_efficiency_pit, target_and_weight)
 from oibc.features import build_frame, clean_flags
 from oibc.io import hourly_index, load_generation, load_sites, load_smp_test, load_smp_train
@@ -151,6 +153,19 @@ for r in ROUNDS:
         eff_tab[mode] = ({c: e_tr[c].to_numpy() for c in EFF_FEATS}, {c: e_te[c].to_numpy() for c in EFF_FEATS})
         log(f"효율 피처({mode}) 평가 행 {int(pd.Series(e_te['eff_mid'].to_numpy()).groupby(dt['site_id'].to_numpy()).first().notna().sum())}곳, "
             f"eff_days 최소 {np.nanmin(e_te['eff_days'].to_numpy()):.0f}일")
+    # v12: win="all" 변형은 2폴드 검증과 같은 캐시 프레임(10_cv_build, 2021-06~2025-05 학습 구간 전체)으로 학습.
+    # 효율 피처는 FINAL_TRAIN 마지막 1년으로 잰 같은 값(eff)을 붙인다 (학습 구간 실적만 사용)
+    dc = None
+    if any(VARIANTS[v].get("win") == "all" for v in VARS):
+        assert not {VARIANTS[v].get("eff") for v in VARS if VARIANTS[v].get("win")} - {None, True}
+        dc = pd.read_parquet(CACHE / f"frame_r{r}.parquet")
+        dc["site_id"] = dc["site_id"].astype("int32")
+        dc = dc[(dc["ts"] >= CV_START) & (dc["ts"] <= FINAL_TRAIN[1])].reset_index(drop=True)
+        selc = (dc["keep"] & (dc["elev"] > 0)).to_numpy()
+        if True in modes:
+            for c in EFF_FEATS:
+                dc[c] = dc["site_id"].map(eff[c]).astype("float32")
+        log(f"round {r}: 전체 기간 학습 프레임 {dc['ts'].min()} ~ {dc['ts'].max()}, 학습 행 {int(selc.sum()):,}")
     for v in VARS:
         feats, target = VARIANTS[v]["feats"], VARIANTS[v]["target"]
         mode = VARIANTS[v].get("eff")
@@ -158,13 +173,15 @@ for r in ROUNDS:
             for c in EFF_FEATS:
                 d[c], dt[c] = eff_tab[mode][0][c], eff_tab[mode][1][c]
         n_iter = json.load(open(OOF / f"{v}_B_r{r}.json"))["best_iter"]
-        y, wt = target_and_weight(d, target)
-        m = fit_model(VARIANTS[v].get("algo", "lgb"), d[sel], y[sel], wt[sel], n_estimators=n_iter, feats=feats,
+        assert VARIANTS[v].get("win") in (None, "all"), v
+        dtr, str_ = (dc, selc) if VARIANTS[v].get("win") == "all" else (d, sel)
+        y, wt = target_and_weight(dtr, target)
+        m = fit_model(VARIANTS[v].get("algo", "lgb"), dtr[str_], y[str_], wt[str_], n_estimators=n_iter, feats=feats,
                       seed=VARIANTS[v].get("seed"))
         preds[(v, r)] = predict_cf(m, dt, feats, target) * dt["capacity_kw"].to_numpy("float64")
         log(f"{v} round {r} (트리 {n_iter}개): 예측 합계 {preds[(v, r)].sum() / 1e6:,.2f} GWh")
         del m
-    del d, dt
+    del d, dt, dc
     gc.collect()
 
 ps = base_te.copy()

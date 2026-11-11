@@ -83,6 +83,14 @@ MLP_LR_DECAY = 0.5         # MLP_LR_STEP 에폭마다 학습률에 곱함 (고�
 MLP_LR_STEP = 10
 MLP_CLIP = 5.0
 
+# v12: 배깅 계열(RandomForest). v3 단독 RF는 LightGBM과 비슷한 수준(W 202.0M vs 200.8M)이었고
+# v2 0.6 + RF 0.4 블렌드가 W −1.4% (11-07 미제출 실험) → 단독으로 경쟁력 있는 다른 계열 후보.
+# max_samples로 트리마다 행 절반만 써서 속도와 다양성을 함께 얻는다.
+RF_PARAMS = dict(
+    n_estimators=200, min_samples_leaf=50, max_features=0.5, max_samples=0.5,
+    n_jobs=-1, criterion="squared_error",
+)
+
 # baseline.py 근사 (참고용 비교군, objective l2)
 BASE_WA = ["wa_cloud", "wa_temp", "wa_humidity", "wa_rain", "wa_wind_speed", "wa_ground_press"]
 BASE_WB = ["wb_cloud", "wb_temp", "wb_rel_hum", "wb_uv_idx", "wb_precip_prob",

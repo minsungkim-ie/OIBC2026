@@ -148,7 +148,33 @@ def fit_model(algo, Xtr, ytr, wtr, Xes=None, yes=None, wes=None, n_estimators=No
         m.fit(Xtr[feats], ytr, **kw)
         best = (m.get_best_iteration() + 1) if Xes is not None else p["iterations"]
         return _Wrapped(m, best, feats)
+    if algo in ("rf", "et"):
+        return fit_forest(algo, Xtr, ytr, wtr, n_estimators=n_estimators, feats=feats, seed=seed)
     raise ValueError(algo)
+
+
+def fit_forest(algo, Xtr, ytr, wtr, n_estimators=None, feats=FEATURES, seed=None):
+    """v12: 배깅 계열(sklearn RandomForest/ExtraTrees, 제곱오차). 부스팅과 오차 구조가 달라 앙상블 다양화용.
+    조기종료가 없어 트리 수는 고정(RF_PARAMS). 효율 피처 결측은 MLP와 같게 채운다(eff_days 0, 나머지 1.0)."""
+    from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
+    from .config import RF_PARAMS, SEED
+    feats = [f for f in feats if f != "site_id"]
+    p = dict(RF_PARAMS, random_state=SEED if seed is None else seed)
+    if n_estimators is not None:
+        p["n_estimators"] = n_estimators
+    cls = RandomForestRegressor if algo == "rf" else ExtraTreesRegressor
+    m = cls(**p)
+    w = np.asarray(wtr, dtype="float64")
+    m.fit(_MLP.prep_raw(Xtr, feats).astype("float32"), np.asarray(ytr, dtype="float32"), sample_weight=w / w.mean())
+    return _Forest(m, p["n_estimators"], feats)
+
+
+class _Forest:
+    def __init__(self, m, best_iter, feats):
+        self.m, self.best_iteration_, self.feats = m, best_iter, feats
+
+    def predict(self, X):
+        return self.m.predict(_MLP.prep_raw(X, self.feats).astype("float32"))
 
 
 def predict_kwh(m, d, feats=FEATURES, clip=PRED_CF_CLIP):

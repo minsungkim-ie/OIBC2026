@@ -18,7 +18,7 @@ import pandas as pd
 
 from oibc.config import ROUNDS
 from oibc.cv import (CACHE, EFF_FEATS, ES_DAYS, FOLDS, OUT_CV, PIT_MODES, VARIANTS, _eff_prep, attach_eff,
-                     eff_source, predict_cf, target_and_weight)
+                     eff_source, predict_cf, target_and_weight, train_start)
 from oibc.io import load_generation, load_sites
 from oibc.model import fit_model, importance_top
 
@@ -54,7 +54,7 @@ for r in ROUNDS:
                     f"(eff_mid 중앙값 {ev.median():.3f}, 5~95% {ev.quantile(.05):.3f}~{ev.quantile(.95):.3f})")
             es_cut = t1 - pd.Timedelta(days=ES_DAYS)
             base = d["keep"] & (d["elev"] > 0)
-            tr = base & (d["ts"] >= t0) & (d["ts"] <= es_cut)
+            tr = base & (d["ts"] >= train_start(name, t0, t1)) & (d["ts"] <= es_cut)
             es = base & (d["ts"] > es_cut) & (d["ts"] <= t1)
             y, w = target_and_weight(d, target)
             algo = VARIANTS[name].get("algo", "lgb")

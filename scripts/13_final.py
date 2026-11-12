@@ -9,6 +9,8 @@
   v11 = python scripts/13_final.py v11 v2 csi v2e csie v2e_c csie_c csie_m --weights 0.1125,0.1125,0.1125,0.1125,0.225,0.225,0.1 --comp submissions/v4/composition.csv --alpha 0.9768
         (csie_m = MLP, algo="mlp". 최종 학습 에폭 = 폴드 B 최적 에폭, 학습률 일정은 같은 고정 계단)
   v12 = python scripts/13_final.py v12 v2_wa csi_wa v2e_wa csie_wa v2e_c_wa csie_c_wa --weights 0.125,0.125,0.125,0.125,0.25,0.25 --comp submissions/v4/composition.csv --alpha 0.9717
+  v14 후보 = 위 v12의 변형 6개를 확장 예보 피처 버전(v2x_wa csix_wa v2ex_wa csiex_wa v2ex_c_wa csiex_c_wa)으로 바꾼 것
+        (extra=True: 학습은 캐시 extra_r{r}.parquet(10b_cv_extra), 평가 구간은 그날 예보로 oibc.extra 계산)
         (win="all" 변형 = 2폴드 캐시 프레임으로 2021-06~2025-05 학습 구간 전체 4년 학습. 트리 수 = 폴드 B(3년 학습) best_iter)
   --weights: 변형별 혼합 가중치(합 1, 변형 순서대로). 없으면 단순 평균
   --alpha-src est: 배율을 "[이력]" 조건(평가 연도와 같은 조건) 결과에서 고른다 (기본은 전체 발전소)
@@ -33,6 +35,7 @@ from oibc.composition import local_search, objective, random_feasible
 from oibc.config import FINAL_TRAIN, OPT_SEED0, OPT_STARTS, ROOT, ROUNDS
 from oibc.cv import (CACHE, CV_START, EFF_FEATS, decay_mult, EFF_WINDOW_DAYS, FOLDS, OUT_CV, PIT_MODES, V4_VARIANTS, VARIANTS, W17, _eff_prep,
                      eff_source, predict_cf, site_efficiency, site_efficiency_pit, target_and_weight)
+from oibc.extra import EXTRA_FEATS, attach_extra, extra_tables
 from oibc.features import build_frame, clean_flags
 from oibc.io import hourly_index, load_generation, load_sites, load_smp_test, load_smp_train
 from oibc.model import fit_model
@@ -126,6 +129,10 @@ smp = load_smp_test()
 index = pd.DatetimeIndex(smp["ts"])
 tabs_tr = station_tables("train", FINAL_TRAIN[0], FINAL_TRAIN[1], sites, log)
 tabs_te = station_tables("test", index[0], index[-1], sites, log)
+use_extra = any(VARIANTS[v].get("extra") for v in VARS)
+if use_extra:
+    assert all(VARIANTS[v].get("win") == "all" for v in VARS if VARIANTS[v].get("extra")), "extra는 win=all 변형만"
+    xt_te = extra_tables(tabs_te, sites)
 gen = load_generation(*FINAL_TRAIN)
 base_te = pd.MultiIndex.from_product([sites["site_id"], index], names=["site_id", "ts"]).to_frame(index=False)
 modes = {VARIANTS[v].get("eff") for v in VARS} - {None, False}
@@ -140,6 +147,9 @@ for r in ROUNDS:
     keep, _ = clean_flags(d)
     sel = (keep & (d["elev"] > 0)).to_numpy()
     dt = build_frame(base_te, sites, *tabs_te[r])
+    if use_extra:
+        dt = attach_extra(dt, sites, *xt_te[r])
+        assert dt[EXTRA_FEATS].isna().sum().sum() == 0
     # 효율 피처 표: 방식(mode)별로 한 번씩 만들고, 변형마다 d·dt의 EFF_FEATS 열을 바꿔 끼운다
     eff_tab = {}
     if True in modes:
@@ -160,7 +170,13 @@ for r in ROUNDS:
         assert not {VARIANTS[v].get("eff") for v in VARS if VARIANTS[v].get("win")} - {None, True}
         dc = pd.read_parquet(CACHE / f"frame_r{r}.parquet")
         dc["site_id"] = dc["site_id"].astype("int32")
-        dc = dc[(dc["ts"] >= CV_START) & (dc["ts"] <= FINAL_TRAIN[1])].reset_index(drop=True)
+        mc = ((dc["ts"] >= CV_START) & (dc["ts"] <= FINAL_TRAIN[1])).to_numpy()
+        dc = dc[mc].reset_index(drop=True)
+        if use_extra:
+            x = pd.read_parquet(CACHE / f"extra_r{r}.parquet")[mc].reset_index(drop=True)
+            for c in EXTRA_FEATS:
+                dc[c] = x[c].to_numpy()
+            del x
         selc = (dc["keep"] & (dc["elev"] > 0)).to_numpy()
         if True in modes:
             for c in EFF_FEATS:

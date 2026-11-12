@@ -39,6 +39,12 @@ if any(VARIANTS[n].get("eff") in PIT_MODES for n in names):
 for r in ROUNDS:
     d = pd.read_parquet(CACHE / f"frame_r{r}.parquet")
     d["site_id"] = d["site_id"].astype("int32")
+    if any(VARIANTS[n].get("extra") for n in names):
+        x = pd.read_parquet(CACHE / f"extra_r{r}.parquet")    # scripts/10b_cv_extra.py, frame과 같은 행 순서
+        assert len(x) == len(d)
+        for c in x.columns:
+            d[c] = x[c].to_numpy()
+        del x
     log(f"round {r}: 캐시 {len(d):,}행 로드")
     for name in names:
         feats, target = VARIANTS[name]["feats"], VARIANTS[name]["target"]

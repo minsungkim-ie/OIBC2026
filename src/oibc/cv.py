@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .config import FEATURES, ROOT, TZ, _ts
+from .extra import EXTRA_FEATS
 
 OUT_CV = ROOT / "outputs" / "v4"
 CACHE = OUT_CV / "cache"
@@ -75,6 +76,15 @@ VARIANTS = {
     "csi_wa": dict(feats=FEATURES, target="csi", win="all"),
     "v2e_c_wa": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, algo="cat", win="all"),
     "csie_c_wa": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, algo="cat", win="all"),
+    # v14 후보: v12 앙상블 6개 + 확장 예보 피처 (oibc.extra, 캐시 extra_r{r}.parquet). 나머지 설정은 v12와 같다
+    "v2x_wa": dict(feats=FEATURES + EXTRA_FEATS, target="cf", win="all", extra=True),
+    "csix_wa": dict(feats=FEATURES + EXTRA_FEATS, target="csi", win="all", extra=True),
+    "v2ex_wa": dict(feats=FEATURES + EFF_FEATS + EXTRA_FEATS, target="cf", eff=True, win="all", extra=True),
+    "csiex_wa": dict(feats=FEATURES + EFF_FEATS + EXTRA_FEATS, target="csi", eff=True, win="all", extra=True),
+    "v2ex_c_wa": dict(feats=FEATURES + EFF_FEATS + EXTRA_FEATS, target="cf", eff=True, algo="cat", win="all",
+                      extra=True),
+    "csiex_c_wa": dict(feats=FEATURES + EFF_FEATS + EXTRA_FEATS, target="csi", eff=True, algo="cat", win="all",
+                       extra=True),
     # v13 후보: decay = 학습 끝에서 1년 멀어질 때마다 표본 가중치 × decay (최근 연도 중시)
     "v2e_wad": dict(feats=FEATURES + EFF_FEATS, target="cf", eff=True, win="all", decay=0.7),
     "csie_wad": dict(feats=FEATURES + EFF_FEATS, target="csi", eff=True, win="all", decay=0.7),

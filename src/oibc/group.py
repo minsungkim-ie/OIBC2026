@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .config import FEATURES, K_HIGH, K_HOURS, SEED
+from .extra import EXTRA_FEATS
 
 NUM = [f for f in FEATURES if f not in ("site_id", "lat", "lon", "wa_dist", "wb_dist", "capacity_kw",
                                        "hour", "month", "doy_sin", "doy_cos")]
@@ -26,22 +27,23 @@ GROUP_PARAMS = dict(objective="l1", learning_rate=0.03, num_leaves=31, min_child
 GROUP_ES = 300
 
 
-def group_frame(d, group_of):
+def group_frame(d, group_of, extra=False):
     """d: build_frame 결과(site_id 정수 코드, energy 있으면 keep 열도). group_of: 정수 site_id → "G1"/"G2".
 
     피처는 행이 있는 발전소 전부의 용량가중 평균, 타깃은 keep·실적 있는 발전소만.
     """
-    d = d[[c for c in NUM + ["site_id", "ts", "capacity_kw", "energy", "keep"] if c in d.columns]].copy()
+    num = NUM + (EXTRA_FEATS if extra else [])     # v16: extra=True면 확장 예보 피처(oibc.extra)도 용량가중 평균
+    d = d[[c for c in num + ["site_id", "ts", "capacity_kw", "energy", "keep"] if c in d.columns]].copy()
     d["g"] = d["site_id"].map(group_of)
     assert d["g"].notna().all()
     has = d["energy"].notna() & d["keep"].astype(bool) if "energy" in d.columns else pd.Series(False, index=d.index)
     cap = d["capacity_kw"].astype("float64")
     tmp = pd.DataFrame({"g": d["g"], "ts": d["ts"], "capacity_kw": cap, "cap_has": cap * has,
                         "e_has": d["energy"].where(has, 0.0) if "energy" in d.columns else 0.0})
-    for c in NUM:
+    for c in num:
         tmp["_" + c] = d[c].astype("float64") * cap
     G = tmp.groupby(["g", "ts"]).sum()
-    for c in NUM:
+    for c in num:
         G[c] = G.pop("_" + c) / G["capacity_kw"]
     G = G.join(d.groupby(["g", "ts"])[SD_COLS].std().fillna(0.0).add_suffix("_sd")).reset_index()
     G["y"] = G["e_has"] / G["cap_has"].replace(0, np.nan)
@@ -66,8 +68,44 @@ def joint(g17, g10):
     return G[G["elev"] > 0].reset_index(drop=True)
 
 
-def group_feats(G):
-    return [c for c in G.columns if c not in META]
+# v15: 그룹 모델 변형. target "csi" = 그룹 cf ÷ 그룹 평균 cosz의 청천 cf(학습 가중치에 청천값을 곱해 같은 cf 손실),
+# params = GROUP_PARAMS 덮어쓰기, aug = 학습에 무작위 2분할 그룹 n개를 추가(평가는 실제 구성 그룹). 검증 EXPERIMENTS 11-12.
+GROUP_VARIANTS = {
+    "g": dict(),
+    "g_csi": dict(target="csi"),
+    "g_lr": dict(params=dict(learning_rate=0.015, feature_fraction=0.3)),
+    "g_augcsi": dict(target="csi", aug=6),
+    # v16 후보: 위 4개에 확장 예보 피처(그룹 용량가중 평균)를 더한 것
+    "gx": dict(extra=True),
+    "gx_csi": dict(target="csi", extra=True),
+    "gx_lr": dict(params=dict(learning_rate=0.015, feature_fraction=0.3), extra=True),
+    "gx_augcsi": dict(target="csi", aug=6, extra=True),
+}
+AUG_SEED = 42
+CS_FLOOR = 0.05
+
+
+EXTRA_COLS = set(EXTRA_FEATS) | {c + "_r10" for c in EXTRA_FEATS}
+
+
+def group_feats(G, extra=None):
+    """extra=False면 확장 예보 피처 열을 뺀다 (G에 있어도 기존 변형은 v14·v15와 같은 피처로 학습)."""
+    return [c for c in G.columns if c not in META and c != "aug" and (extra or c not in EXTRA_COLS)]
+
+
+def aug_partitions(n_sites, n):
+    """무작위 2분할 n개 ({정수 site_id: "G1"/"G2"}). 시드 고정."""
+    rng = np.random.default_rng(AUG_SEED)
+    return [{i: ("G1" if l == 0 else "G2") for i, l in enumerate(rng.integers(0, 2, n_sites))} for _ in range(n)]
+
+
+def _target(tr, w, target):
+    y = tr["y"].to_numpy("float64")
+    if target != "csi":
+        return y, w
+    from .cv import clear_sky_cf
+    cs = np.maximum(clear_sky_cf(tr["cosz"]), CS_FLOOR)
+    return np.clip(y / cs, 0, 3), w * cs
 
 
 def group_weight(G, smp):
@@ -80,21 +118,29 @@ def train_rows(G, t0, t1):
     return G[(G["ts"] >= t0) & (G["ts"] <= t1) & (G["frac"] > 0.5) & G["y"].notna()].reset_index(drop=True)
 
 
-def fit_group(tr, smp, es_days=60, n_estimators=None):
-    """n_estimators 없으면 마지막 es_days일로 조기종료, 있으면 그 수로 전체 학습."""
-    feats = group_feats(tr)
-    w = group_weight(tr, smp)
-    p = dict(GROUP_PARAMS)
+def fit_group(tr, smp, es_days=60, n_estimators=None, target="cf", params=None, extra=False):
+    """n_estimators 없으면 마지막 es_days일로 조기종료, 있으면 그 수로 전체 학습. 반환 모델에 target을 붙인다."""
+    feats = group_feats(tr, extra)
+    y, w = _target(tr, group_weight(tr, smp), target)
+    p = dict(GROUP_PARAMS, **(params or {}))
     if n_estimators is not None:
         p["n_estimators"] = n_estimators
-        return lgb.LGBMRegressor(**p).fit(tr[feats], tr["y"], sample_weight=w)
-    es = (tr["ts"] > tr["ts"].max() - pd.Timedelta(days=es_days)).to_numpy()
-    return lgb.LGBMRegressor(**p).fit(
-        tr.loc[~es, feats], tr["y"][~es], sample_weight=w[~es], eval_set=[(tr.loc[es, feats], tr["y"][es])],
-        eval_sample_weight=[w[es]], callbacks=[lgb.early_stopping(GROUP_ES, verbose=False)])
+        m = lgb.LGBMRegressor(**p).fit(tr[feats], y, sample_weight=w)
+    else:
+        es = (tr["ts"] > tr["ts"].max() - pd.Timedelta(days=es_days)).to_numpy()
+        m = lgb.LGBMRegressor(**p).fit(
+            tr.loc[~es, feats], y[~es], sample_weight=w[~es], eval_set=[(tr.loc[es, feats], y[es])],
+            eval_sample_weight=[w[es]], callbacks=[lgb.early_stopping(GROUP_ES, verbose=False)])
+    m.group_target = target
+    m.group_feats = feats
+    return m
 
 
 def predict_group_kwh(m, G):
     """그룹 cf 예측 × 그룹 설비용량(행이 있는 발전소 전부) → kWh. G는 joint() 결과(주간만)."""
-    cf = np.clip(m.predict(G[group_feats(G)]), 0, 1.1)
+    p = m.predict(G[getattr(m, "group_feats", None) or group_feats(G)])
+    if getattr(m, "group_target", "cf") == "csi":
+        from .cv import clear_sky_cf
+        p = p * np.maximum(clear_sky_cf(G["cosz"]), CS_FLOOR)
+    cf = np.clip(p, 0, 1.1)
     return pd.Series(cf * G["capacity_kw"].to_numpy("float64"), index=pd.MultiIndex.from_frame(G[["g", "ts"]]))

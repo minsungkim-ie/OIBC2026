@@ -18,7 +18,41 @@ R_COLS = ["wa_cloud", "wa_temp", "wa_humidity", "wa_rain", "wa_snow", "wa_wind_s
           "wb_rel_hum", "wb_dew_point", "wb_uv_idx", "wb_vis", "wb_ceiling", "wb_precip_prob", "wb_total_liq",
           "wb_snow", "wb_wind_speed"]
 COMMON = ["elev", "cosz", "toa", "doy_sin", "doy_cos", "lat", "lon", "wa_dist", "wb_dist"]
-NN_PARAMS = dict(hidden=64, emb=16, lr=2e-3, wd=1e-4, batch_days=4, max_epochs=40, patience=6, site_lambda=0.3)
+NN_PARAMS = dict(hidden=64, emb=16, lr=2e-3, wd=1e-4, batch_days=4, max_epochs=40, patience=6, site_lambda=0.3,
+                 sched=None)
+# v18: sched="cos" → 조기종료 없이 max_epochs 고정, 학습률 코사인 감쇠(배치마다), 마지막 상태 사용.
+
+# v18: 앞선 대상일 예보 흐름 (CLAUDE.md 규칙 4: D−1 대상일 예보는 D−2 17시 발행 → 허용). 17시 라운드 열만.
+PREV_COLS = ["wa_cloud", "wa_humidity", "wa_temp", "wb_cloud", "wb_uv_idx", "wb_vis", "wb_precip_prob"]
+
+
+def add_prev(D, src=None):
+    """X 뒤에 붙인다: D−1 같은 시각 값, D−1 하루 평균, D−2 하루 평균 (PREV_COLS, 17시 라운드).
+
+    앞선 날은 D 자체 또는 src(dict days·X, 예: 평가 구간 첫날의 앞날을 담은 학습 텐서)에서 찾는다.
+    앞선 날이 없으면 그날 값으로 대체(변화 0). 다음 대상일 값은 쓰지 않는다.
+    """
+    ci = [R_COLS.index(c) for c in PREV_COLS]
+    days, X = D["days"], D["X"]
+    pool_days = days if src is None else days.append(src["days"])
+    pool_X = X[..., ci] if src is None else np.concatenate([X[..., ci], src["X"][..., ci]])
+    pos = pd.Series(np.arange(len(pool_days)), index=pool_days)
+    pos = pos[~pos.index.duplicated()]
+    cur = X[..., ci].astype("float32")
+
+    def lag(k):
+        j = pos.reindex(days - pd.Timedelta(days=k)).to_numpy()
+        out = cur.copy()
+        ok = ~np.isnan(j)
+        out[ok] = pool_X[j[ok].astype(int)].astype("float32")
+        return out
+
+    l1, l2 = lag(1), lag(2)
+    m1 = np.broadcast_to(l1.mean(2, keepdims=True), l1.shape)
+    m2 = np.broadcast_to(l2.mean(2, keepdims=True), l2.shape)
+    new = np.concatenate([X, l1.astype("float16"), m1.astype("float16"), m2.astype("float16")], -1)
+    assert np.isfinite(new.astype("float32")).all()
+    return dict(D, X=new)
 
 
 def day_tensors(f17, f10, n_sites):
@@ -131,6 +165,11 @@ class Trainer:
         opt = torch.optim.AdamW(model.parameters(), lr=self.p["lr"], weight_decay=self.p["wd"])
         W = torch.from_numpy(_weights(D["ts"], smp))
         n_ep = epochs or self.p["max_epochs"]
+        cos = self.p["sched"] == "cos"
+        if cos:
+            idx_es = None
+            steps = n_ep * int(np.ceil(len(idx_tr) / self.p["batch_days"]))
+            sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=self.p["lr"] * 0.02)
         best, best_ep, best_state, bad = np.inf, 0, None, 0
         for ep in range(1, n_ep + 1):
             model.train()
@@ -144,6 +183,10 @@ class Trainer:
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
+                if cos:
+                    sch.step()
+            if cos and ep % 5 == 0:
+                log(f"    ep {ep}: 마지막 배치 손실 {float(loss):.5f}")
             if idx_es is not None:
                 cf = torch.from_numpy(self.predict(model, {k: (v[idx_es] if k != "days" else v[idx_es])
                                                            for k, v in D.items()}))

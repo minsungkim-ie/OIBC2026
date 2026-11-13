@@ -98,3 +98,42 @@ def predict_group_kwh(m, G):
     """그룹 cf 예측 × 그룹 설비용량(행이 있는 발전소 전부) → kWh. G는 joint() 결과(주간만)."""
     cf = np.clip(m.predict(G[group_feats(G)]), 0, 1.1)
     return pd.Series(cf * G["capacity_kw"].to_numpy("float64"), index=pd.MultiIndex.from_frame(G[["g", "ts"]]))
+
+
+# v17: 앞선 대상일 예보로 만든 날씨 흐름 피처 (CLAUDE.md 규칙 4, 2026-11-13 규정 수준으로 완화).
+# D−L 대상일의 17시 라운드 예보는 D−L−1일 17:00 발행 → 대상일 D의 예측시점(D−1일 17:00)보다 이르다 (L ≥ 1).
+# 다음 대상일 예보는 쓰지 않는다. 일 집계 = 그 대상일 주간(그룹 평균 elev > 0) 행의 평균.
+PREV_COLS = ["wa_cloud", "wb_cloud", "wb_uv_idx", "wb_precip_prob", "wb_rel_hum", "wa_humidity", "wb_total_liq",
+             "wa_snow", "wb_snow", "wb_vis", "wa_temp"]
+PREV_LAGS = (1, 2)
+PREV_MEAN_DAYS = 3
+
+
+def day_agg(G):
+    """joint() 결과(주간 행) → (g, td) 인덱스의 대상일별 그룹 평균 예보 (17시 라운드 열)."""
+    return G.groupby(["g", "td"])[PREV_COLS].mean()
+
+
+def attach_prev(G, agg):
+    """G에 D−1·D−2 대상일 일 집계(D1_·D2_), D−1~D−3 평균(D3m_), 오늘 − 어제 변화(dD1_)를 붙인다.
+
+    agg: day_agg 결과. 평가 구간 첫날은 학습 구간 마지막 날들의 예보(평가 전 발행)를 쓰도록 둘을 합쳐 넘긴다.
+    이력이 없는 날(데이터 첫 3일)은 NaN — LightGBM 결측 처리.
+    """
+    a = agg.reset_index()
+    out = G
+    lagged = {}
+    for L in range(1, PREV_MEAN_DAYS + 1):
+        b = a.copy()
+        b["td"] = b["td"] + pd.Timedelta(days=L)
+        b = b.rename(columns={c: f"D{L}_{c}" for c in PREV_COLS})
+        lagged[L] = out[["g", "td"]].merge(b, on=["g", "td"], how="left")
+    for L in PREV_LAGS:
+        for c in PREV_COLS:
+            out[f"D{L}_{c}"] = lagged[L][f"D{L}_{c}"].to_numpy()
+    today = out[["g", "td"]].merge(a, on=["g", "td"], how="left")
+    for c in PREV_COLS:
+        m = np.nanmean(np.stack([lagged[L][f"D{L}_{c}"].to_numpy() for L in lagged]), axis=0)
+        out[f"D3m_{c}"] = m
+        out[f"dD1_{c}"] = today[c].to_numpy() - lagged[1][f"D1_{c}"].to_numpy()
+    return out
